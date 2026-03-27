@@ -1,0 +1,13 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+aiohttp>=3.9
+neo4j>=5.13
+faiss-cpu>=1.8
+numpy>=1.26
+redis[asyncio]>=5.0
+pandas>=2.0
+openpyxl>=3.1
+pydantic>=2.0
+pydantic-settings>=2.0
+python-dotenv>=1.0
+aiosqlite>=0.20
