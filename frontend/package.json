@@ -1,0 +1,4 @@
+{"name":"report-system","version":"1.0.0","private":true,
+"scripts":{"dev":"vite","build":"vite build"},
+"dependencies":{"vue":"^3.4.0","element-plus":"^2.7.0","@element-plus/icons-vue":"^2.3.0","uuid":"^9.0.0"},
+"devDependencies":{"vite":"^5.2.0","@vitejs/plugin-vue":"^5.0.0"}}
