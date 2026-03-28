@@ -35,3 +35,32 @@ async def get_outline(sid:str, h=Depends(_ch)):
 @router.delete("/sessions/{sid}")
 async def delete_session(sid:str, h=Depends(_ch)):
     await h.delete_session(sid); return {"success":True}
+
+@router.get("/sessions/{sid}/artifacts")
+async def get_artifacts(sid: str, h=Depends(_ch)):
+    """返回会话的结构化产物：大纲 JSON + 报告 HTML。
+
+    前端用此端点替代遍历 messages[].metadata.report_html 的脆弱逻辑。
+    """
+    outline_state = await h.get_outline_state(sid)
+    outline_json = (outline_state or {}).get("outline_json")
+    anchor_info = (outline_state or {}).get("anchor_info")
+
+    report_html = None
+    report_title = None
+    try:
+        msgs = await h.get_messages(sid, limit=100)
+        for m in reversed(msgs):
+            meta = m.get("metadata") or {}
+            if meta.get("report_html"):
+                report_html = meta["report_html"]
+                report_title = meta.get("report_title", "报告")
+                break
+    except Exception:
+        pass
+
+    return {
+        "outline_json": outline_json,
+        "anchor_info": anchor_info,
+        "report": {"html": report_html, "title": report_title} if report_html else None,
+    }

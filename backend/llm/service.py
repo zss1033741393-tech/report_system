@@ -214,6 +214,140 @@ class LLMService:
             "reasoning_content": reasoning_text,
         }, ensure_ascii=False, default=str))
 
+    async def complete_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        config: LLMConfig | None = None,
+    ) -> dict:
+        """Native tool calling。
+
+        返回:
+          {
+            "content": str,          # 最终文本（finish_reason=="stop"时）
+            "tool_calls": [          # finish_reason=="tool_calls"时
+              {"id": "...", "name": "...", "args": {...}}
+            ],
+            "finish_reason": "tool_calls" | "stop"
+          }
+        """
+        cfg = config or LLMConfig()
+        model = cfg.model or self.default_model
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "tools": tools,
+            "temperature": cfg.temperature,
+            "top_p": cfg.top_p,
+            "max_tokens": cfg.max_tokens,
+            "stream": True,
+        }
+        # tool calling 时禁用 thinking（避免干扰 tool_calls delta 解析）
+        extra = {k: v for k, v in (cfg.extra_payload or {}).items() if k != "enable_thinking"}
+        if extra:
+            payload.update(extra)
+
+        timeout = aiohttp.ClientTimeout(
+            connect=cfg.timeout_connect or self._timeout_connect,
+            sock_read=cfg.timeout_read or self._timeout_read,
+            total=cfg.timeout_total or self._timeout_total,
+        )
+
+        session = await self._get_session()
+        request_kwargs = {"json": payload, "timeout": timeout}
+        if self._proxy:
+            request_kwargs["proxy"] = self._proxy
+
+        content_parts: list[str] = []
+        # tool_calls 聚合：{index: {id, name, args_parts}}
+        tc_map: dict[int, dict] = {}
+        finish_reason = "stop"
+
+        try:
+            async with session.post(
+                f"{self.base_url}/chat/completions", **request_kwargs
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    raise RuntimeError(f"LLM tool-call 失败: status={resp.status}, body={error_text[:500]}")
+
+                buffer = bytearray()
+                async for raw_bytes in resp.content:
+                    buffer.extend(raw_bytes)
+                    while b"\n" in buffer:
+                        line_end = buffer.find(b"\n")
+                        line_bytes = bytes(buffer[:line_end])
+                        del buffer[:line_end + 1]
+
+                        if not line_bytes.startswith(b"data:"):
+                            continue
+                        data_str = line_bytes[5:].strip()
+                        if data_str == b"[DONE]":
+                            break
+
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
+                        choice = choices[0]
+                        fr = choice.get("finish_reason")
+                        if fr:
+                            finish_reason = fr
+
+                        delta = choice.get("delta", {})
+                        if not isinstance(delta, dict):
+                            continue
+
+                        # 普通文本内容
+                        if c := delta.get("content"):
+                            content_parts.append(c)
+
+                        # tool_calls delta 聚合
+                        for tc_delta in delta.get("tool_calls") or []:
+                            idx = tc_delta.get("index", 0)
+                            if idx not in tc_map:
+                                tc_map[idx] = {"id": "", "name": "", "args_parts": []}
+                            entry = tc_map[idx]
+                            if tc_id := tc_delta.get("id"):
+                                entry["id"] = tc_id
+                            func = tc_delta.get("function") or {}
+                            if fn_name := func.get("name"):
+                                entry["name"] = fn_name
+                            if fn_args := func.get("arguments"):
+                                entry["args_parts"].append(fn_args)
+
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.error(f"LLM complete_with_tools error: {e}")
+            raise
+
+        # 组装 tool_calls 结果
+        tool_calls = []
+        for idx in sorted(tc_map.keys()):
+            entry = tc_map[idx]
+            args_str = "".join(entry["args_parts"])
+            try:
+                args = json.loads(args_str) if args_str else {}
+            except json.JSONDecodeError:
+                args = {"_raw": args_str}
+            tool_calls.append({
+                "id": entry["id"] or f"call_{idx}",
+                "name": entry["name"],
+                "args": args,
+            })
+
+        return {
+            "content": "".join(content_parts),
+            "tool_calls": tool_calls,
+            "finish_reason": finish_reason if finish_reason else ("tool_calls" if tool_calls else "stop"),
+        }
+
     @staticmethod
     def _parse_json(raw: str) -> dict:
         s = raw.strip()

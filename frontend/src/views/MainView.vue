@@ -28,9 +28,10 @@
         </div>
         <!-- 消息列表 -->
         <ChatMessage v-for="m in messages" :key="m.id||m._tid" :msg="m" @confirm="onConfirm" />
-        <div v-if="thinkSteps.length || streamReply || designSteps.length" class="cur">
+        <div v-if="thinkSteps.length || streamReply || designSteps.length || toolCalls.length" class="cur">
           <SkillFactoryProgress v-if="designSteps.length" :design-steps="designSteps" />
           <ThinkingBlock v-if="thinkSteps.length" :steps="thinkSteps" />
+          <ToolCallBlock v-if="toolCalls.length" :tool-calls="toolCalls" />
           <ChatMessage v-if="streamReply" :msg="{role:'assistant',content:streamReply,msg_type:'text',created_at:new Date().toISOString()}" />
         </div>
       </div>
@@ -61,7 +62,8 @@ import QueryInput from '../components/QueryInput.vue'
 import RightPanel from '../components/RightPanel.vue'
 import ThinkingBlock from '../components/ThinkingBlock.vue'
 import SkillFactoryProgress from '../components/SkillFactoryProgress.vue'
-import { sendMessage, fetchSessions, fetchMessages, fetchOutlineState, deleteSession } from '../utils/sse.js'
+import ToolCallBlock from '../components/ToolCallBlock.vue'
+import { sendMessage, fetchSessions, fetchMessages, fetchOutlineState, fetchArtifacts, deleteSession } from '../utils/sse.js'
 
 const sessions = ref([]), sid = ref(''), messages = ref([]), loading = ref(false)
 const outContent = ref(''), outLoading = ref(false), anchor = ref(null), streamReply = ref('')
@@ -69,6 +71,8 @@ const reportHtml = ref(''), reportTitle = ref(''), reportLoading = ref(false)
 const msgsCtn = ref(null), showRight = ref(false)
 const hasOutline = ref(false), hasReport = ref(false)
 const thinkSteps = ref([]), designSteps = ref([])
+// ReAct 工具调用状态（当前轮次）
+const toolCalls = ref([])   // [{name, args, status, result, success, _expanded}]
 let ctrl = null
 
 const exampleGroups = [
@@ -83,19 +87,21 @@ async function loadSessions() { try { sessions.value = await fetchSessions() } c
 async function switchSession(id) {
   if (ctrl) { ctrl.abort(); ctrl = null }
   loading.value = false; outLoading.value = false; reportLoading.value = false
-  streamReply.value = ''; thinkSteps.value = []; designSteps.value = []
+  streamReply.value = ''; thinkSteps.value = []; designSteps.value = []; toolCalls.value = []
   reportHtml.value = ''; reportTitle.value = ''
   sid.value = id
   try { messages.value = await fetchMessages(id) } catch { messages.value = [] }
+  // 用 artifacts 端点获取大纲和报告（替代遍历消息 metadata 的脆弱逻辑）
   try {
-    const s = await fetchOutlineState(id)
-    if (s?.outline_json) { outContent.value = rJson(s.outline_json); anchor.value = s.anchor_info; hasOutline.value = true }
-    else { outContent.value = ''; anchor.value = null; hasOutline.value = false }
-  } catch { outContent.value = ''; anchor.value = null; hasOutline.value = false }
-  hasReport.value = false
-  for (let i = messages.value.length - 1; i >= 0; i--) {
-    const meta = messages.value[i].metadata
-    if (meta?.report_html) { reportHtml.value = meta.report_html; reportTitle.value = meta.report_title || '报告'; hasReport.value = true; break }
+    const artifacts = await fetchArtifacts(id)
+    if (artifacts?.outline_json) {
+      outContent.value = rJson(artifacts.outline_json); anchor.value = artifacts.anchor_info; hasOutline.value = true
+    } else { outContent.value = ''; anchor.value = null; hasOutline.value = false }
+    if (artifacts?.report?.html) {
+      reportHtml.value = artifacts.report.html; reportTitle.value = artifacts.report.title || '报告'; hasReport.value = true
+    } else { hasReport.value = false }
+  } catch {
+    outContent.value = ''; anchor.value = null; hasOutline.value = false; hasReport.value = false
   }
   showRight.value = hasOutline.value || hasReport.value
   await scroll()
@@ -103,7 +109,7 @@ async function switchSession(id) {
 
 async function newSession() {
   sid.value = uuidv4(); messages.value = []; outContent.value = ''; anchor.value = null
-  streamReply.value = ''; thinkSteps.value = []; designSteps.value = []
+  streamReply.value = ''; thinkSteps.value = []; designSteps.value = []; toolCalls.value = []
   reportHtml.value = ''; reportTitle.value = ''
   hasOutline.value = false; hasReport.value = false; showRight.value = false
   await loadSessions()
@@ -119,9 +125,23 @@ function send(text) {
   if (!sid.value) sid.value = uuidv4()
   messages.value.push({ _tid: Date.now(), role: 'user', content: text, msg_type: 'text', created_at: new Date().toISOString() })
   scroll(); loading.value = true; streamReply.value = ''; outLoading.value = false; reportLoading.value = false
-  thinkSteps.value = []; designSteps.value = []
+  thinkSteps.value = []; designSteps.value = []; toolCalls.value = []
   let outStarted = false, reportStarted = false, compThinking = null, outMdSnap = ''
   ctrl = sendMessage(sid.value, text, {
+    onToolCall(d) {
+      // 新增 running 状态的工具调用卡片
+      toolCalls.value.push({ name: d.name, args: d.args, status: 'running', _expanded: false })
+      scroll()
+    },
+    onToolResult(d) {
+      // 从末尾找到对应的 running 卡片，更新为 done
+      for (let i = toolCalls.value.length - 1; i >= 0; i--) {
+        if (toolCalls.value[i].name === d.name && toolCalls.value[i].status === 'running') {
+          toolCalls.value[i] = { ...toolCalls.value[i], status: 'done', result: d.content, success: d.success !== false, _expanded: false }
+          scroll(); return
+        }
+      }
+    },
     onThinkingStep(d) {
       if (d.status === 'done') { for (let i = thinkSteps.value.length - 1; i >= 0; i--) { if (thinkSteps.value[i].step === d.step && thinkSteps.value[i].status === 'running') { thinkSteps.value[i] = d; scroll(); return } } }
       thinkSteps.value.push(d); scroll()
@@ -162,6 +182,7 @@ function send(text) {
       if (compThinking?.length) meta.thinking = compThinking; else if (thinkSteps.value.length) meta.thinking = [...thinkSteps.value]
       if (outMdSnap) meta.outline_md = outMdSnap
       if (designSteps.value.length) meta.design_steps = [...designSteps.value]
+      if (toolCalls.value.length) meta.tool_calls = toolCalls.value.map(tc => ({ name: tc.name, status: tc.status, success: tc.success }))
       if (reportHtml.value) meta.report_html = reportHtml.value
       if (reportTitle.value) meta.report_title = reportTitle.value
       const content = streamReply.value || (designSteps.value.length ? '看网能力分析完成' : '处理完成')
@@ -169,7 +190,7 @@ function send(text) {
         _tid: Date.now(), role: 'assistant', content, msg_type: designSteps.value.length ? 'design_result' : 'text',
         created_at: new Date().toISOString(), metadata: Object.keys(meta).length ? meta : null
       })
-      streamReply.value = ''; thinkSteps.value = []; designSteps.value = []; scroll(); loadSessions()
+      streamReply.value = ''; thinkSteps.value = []; designSteps.value = []; toolCalls.value = []; scroll(); loadSessions()
     }
   })
 }

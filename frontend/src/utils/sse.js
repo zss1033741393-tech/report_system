@@ -35,6 +35,10 @@ export function sendMessage(sid, message, cb) {
             case 'data_executed': cb.onDataExecuted?.(d); break
             case 'awaiting_confirm': cb.onAwaitingConfirm?.(d); break
             case 'confirm_required': cb.onConfirmRequired?.(d); break
+            // ─── 通用 ReAct 层（新增，不随 Skill 变化）───
+            case 'tool_call': cb.onToolCall?.(d); break
+            case 'tool_result': cb.onToolResult?.(d); break
+            // ─── 原有事件（向后兼容）───
             case 'error': cb.onError?.(d.message); break
             case 'done': cb.onDone?.(); break
           }
@@ -50,3 +54,4 @@ export async function createSession() { const r=await fetch(`${API}/api/v1/sessi
 export async function fetchMessages(sid,limit=100) { const r=await fetch(`${API}/api/v1/sessions/${sid}/messages?limit=${limit}`); return (await r.json()).messages||[] }
 export async function fetchOutlineState(sid) { const r=await fetch(`${API}/api/v1/sessions/${sid}/outline`); return await r.json() }
 export async function deleteSession(sid) { await fetch(`${API}/api/v1/sessions/${sid}`,{method:'DELETE'}) }
+export async function fetchArtifacts(sid) { const r=await fetch(`${API}/api/v1/sessions/${sid}/artifacts`); return await r.json() }

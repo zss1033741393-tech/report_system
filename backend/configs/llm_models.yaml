@@ -93,3 +93,19 @@ scenarios:
     model: "qwen3.5-27b"
     temperature: 0.6
     max_tokens: 32768
+
+  # ReAct 引擎主循环（tool calling，禁用 thinking 以避免干扰 tool_calls delta 解析）
+  react_agent:
+    model: "qwen3.5-27b"
+    temperature: 0.6
+    max_tokens: 32768
+    extra_payload:
+      enable_thinking: false
+
+  # 上下文压缩摘要（轻量调用）
+  context_compressor:
+    model: "qwen3.5-27b"
+    temperature: 0.3
+    max_tokens: 4096
+    extra_payload:
+      enable_thinking: false
