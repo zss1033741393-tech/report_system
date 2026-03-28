@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # ─── SQLite ───
     DB_DIR: str = "./data"
 
+    # ─── Memory ───
+    MEMORY_DIR: str = "./data/memory"
+
     # ─── Skill 匹配（运行态） ───
     SKILL_MATCH_THRESHOLD: float = 0.7
 

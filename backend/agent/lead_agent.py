@@ -1,16 +1,15 @@
 """Lead Agent —— ReAct 引擎入口。
 
-v5.0: 替换 Plan-then-Execute 为 SimpleReActEngine（ReAct 主循环）。
-  - 删除 Planner / Reflector
-  - System Prompt 注入 <skill_system> 块（Progressive Loading）
-  - LLM 通过 tool calling 自主决策，工具 handler 复用所有现有 Executor
-  - 新增 /api/v1/sessions/{sid}/artifacts 端点（通过 ChatHistory 提供数据）
+v5.1: 新增 Memory 系统（跨对话记忆）。
+  - MemoryStorage.load() 读取 session 记忆，注入 system prompt <memory> 块
+  - ReAct 循环结束后 MemoryUpdater.enqueue() 异步提取记忆（debounce 30s）
 """
 import json
 import logging
 from typing import AsyncGenerator
 
 from agent.context_compressor import ContextCompressor
+from agent.memory import MemoryStorage, MemoryUpdater, format_memory_for_prompt
 from agent.react_engine import SimpleReActEngine
 from agent.tool_registry import ToolRegistry, build_tool_registry
 from llm.config import LLMConfig
@@ -108,6 +107,17 @@ class LeadAgent:
             llm_service=llm_service,
         )
 
+        # Memory 系统
+        from config import settings
+        memory_dir = getattr(settings, "MEMORY_DIR", "./data/memory")
+        memory_config = _load("context_compressor")  # 复用轻量配置
+        self._memory_storage = MemoryStorage(storage_dir=memory_dir)
+        self._memory_updater = MemoryUpdater(
+            llm_service=llm_service,
+            config=memory_config,
+            storage=self._memory_storage,
+        )
+
     async def handle_message(
         self, session_id: str, user_message: str
     ) -> AsyncGenerator[str, None]:
@@ -123,7 +133,13 @@ class LeadAgent:
         trace = TraceLogger(session_id=session_id)
         trace_cb = self._make_trace_callback(session_id, trace.trace_id)
 
-        system_prompt = _SYSTEM_BASE
+        # 读取并注入 Memory
+        memory = self._memory_storage.load(session_id)
+        memory_block = format_memory_for_prompt(memory)
+        system_prompt = _SYSTEM_BASE + ("\n" + memory_block if memory_block else "")
+
+        # 收集本轮新增消息，供 memory 异步更新使用
+        new_messages: list[dict] = []
 
         async for event in self._engine.run(
             session_id=session_id,
@@ -134,8 +150,13 @@ class LeadAgent:
             session_service=self._ss,
             skill_loader=self._loader,
             trace_callback=trace_cb,
+            on_new_messages=lambda msgs: new_messages.extend(msgs),
         ):
             yield event
+
+        # 异步触发 memory 更新（debounce 30s，不阻塞响应）
+        if new_messages:
+            self._memory_updater.enqueue(session_id, new_messages)
 
     def _make_trace_callback(self, session_id: str, trace_id: str):
         ch = self._ch

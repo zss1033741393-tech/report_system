@@ -30,6 +30,8 @@ from agent.skill_loader import SkillLoader
 from agent.service_container import ServiceContainer
 from routers.chat import router as chat_router
 from routers.admin import router as admin_router
+from routers.memory import router as memory_router
+from routers.skills import router as skills_router
 from utils.log_setup import setup_logging
 
 setup_logging(log_dir=settings.LOG_DIR, level=settings.LOG_LEVEL)
@@ -117,6 +119,10 @@ async def lifespan(app: FastAPI):
     lead_agent = LeadAgent(llm_service, mw, registry, loader, chat_history, session_service)
 
     # ─── 5. 全局状态 ───
+    # ─── 5. Memory 存储（注入 app_state 供 API 路由使用）───
+    from agent.memory import MemoryStorage
+    memory_storage = MemoryStorage(storage_dir=settings.MEMORY_DIR)
+
     app_state.update({
         "lead_agent": lead_agent,
         "chat_history": chat_history,
@@ -126,6 +132,8 @@ async def lifespan(app: FastAPI):
         "faiss_retriever": faiss_retriever,
         "kb_store": kb_store,
         "container": container,
+        "memory_storage": memory_storage,
+        "skill_registry": registry,
     })
 
     logger.info("========== 初始化完成 ==========")
@@ -144,6 +152,8 @@ app = FastAPI(title="报告生成系统", version="3.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(chat_router)
 app.include_router(admin_router)
+app.include_router(memory_router)
+app.include_router(skills_router)
 
 
 @app.get("/health")

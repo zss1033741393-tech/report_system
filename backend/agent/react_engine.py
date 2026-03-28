@@ -61,6 +61,7 @@ class SimpleReActEngine:
         session_service,        # SessionService
         skill_loader,           # SkillLoader（ToolContext 使用）
         trace_callback=None,
+        on_new_messages=None,   # Optional[Callable[[list[dict]], None]]
     ) -> AsyncGenerator[str, None]:
         """
         主循环。yield 各类 SSE 事件字符串（data 部分，不含 "data: " 前缀）。
@@ -205,11 +206,19 @@ class SimpleReActEngine:
             yield _ev("chat_reply", content=final_content)
             messages.append({"role": "assistant", "content": final_content})
 
-        # ─── 收尾：持久化新消息 ──────────────────────────────────────────
+        # ─── 收尾：持久化新消息 + 通知 memory 更新 ──────────────────────
+        new_msgs = messages[prev_len:]
         await _persist_new_messages(
-            chat_history, session_id, messages[prev_len:],
+            chat_history, session_id, new_msgs,
             tool_ctx, final_content,
         )
+
+        # 回调通知 LeadAgent 收集本轮新消息（用于异步 memory 提取）
+        if on_new_messages and new_msgs:
+            try:
+                on_new_messages(new_msgs)
+            except Exception:
+                pass
 
         yield _ev("done")
 
