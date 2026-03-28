@@ -174,9 +174,6 @@ class LLMService:
                             if reasoning := delta.get("reasoning_content"):
                                 output["reasoning_content"] = reasoning
 
-                            if tool_calls_delta := delta.get("tool_calls"):
-                                output["tool_calls"] = tool_calls_delta
-
                             # content 字段
                             if content := delta.get("content"):
                                 if not parse_think:

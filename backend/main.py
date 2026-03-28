@@ -4,7 +4,7 @@
   1. 创建各基础服务 → 注册到 ServiceContainer
   2. SkillRegistry 扫描 SKILL.md
   3. SkillLoader 自动加载所有执行器（从 SKILL.md executor 声明 + ServiceContainer 依赖注入）
-  4. 组装 Lead Agent（含 Memory 系统）
+  4. 组装 Lead Agent
 """
 
 import logging
@@ -30,7 +30,6 @@ from agent.skill_loader import SkillLoader
 from agent.service_container import ServiceContainer
 from routers.chat import router as chat_router
 from routers.admin import router as admin_router
-from routers.memory import router as memory_router          # ← 新增
 from utils.log_setup import setup_logging
 
 setup_logging(log_dir=settings.LOG_DIR, level=settings.LOG_LEVEL)
@@ -48,7 +47,7 @@ async def lifespan(app: FastAPI):
     llm_service = LLMService(
         base_url=llm_loader.get_base_url(),
         default_model=llm_loader.get_model_name(),
-        api_key=llm_loader.get_api_key() or settings.LLM_API_KEY,
+        api_key=llm_loader.get_api_key() or settings.LLM_API_KEY,  # YAML 优先，.env fallback
         proxy=llm_loader.get_proxy() or settings.LLM_PROXY,
         ssl_verify=llm_loader.get_ssl_verify(),
         timeout_connect=llm_loader.get_timeout_connect(),
@@ -134,12 +133,6 @@ async def lifespan(app: FastAPI):
 
     # ─── 清理 ───
     logger.info("========== 关闭 ==========")
-
-    # 刷新 Memory 队列中待处理的任务（取消防抖定时器，避免进程退出时丢失）  ← 新增
-    if hasattr(lead_agent, "_memory_queue") and lead_agent._memory_queue:
-        lead_agent._memory_queue.flush_all()
-        logger.info("Memory 队列已清理")
-
     await neo4j_retriever.close()
     await session_service.close()
     await chat_history.close()
@@ -151,7 +144,6 @@ app = FastAPI(title="报告生成系统", version="3.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(chat_router)
 app.include_router(admin_router)
-app.include_router(memory_router)          # ← 新增
 
 
 @app.get("/health")
