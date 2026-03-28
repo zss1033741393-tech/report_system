@@ -3,14 +3,16 @@
 
 # 默认模型服务
 default:
-  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  api_key: ""                 # 可为空，使用 .env 中的 LLM_API_KEY 覆盖
+  base_url: "https://xxx/v1"
+  api_key: "xx"
   timeout_connect: 60
   timeout_read: 600
   timeout_total: 660
   ssl_verify: true
-  think_tag_mode: "qwen3"
+  think_tag_mode: ""  # qwen3 / r1 / none
   proxy: ""
+
+
 
 # 模型定义
 models:
@@ -19,33 +21,9 @@ models:
     model: "qwen3.5-27b"
     temperature: 0.6
     top_p: 0.95
-    max_tokens: 16000
+    max_tokens: 32768
     stream: true
     max_retry: 3
-
-  qwen3.5-32b:
-    provider: "default"
-    model: "qwen3.5-32b"
-    temperature: 0.6
-    top_p: 0.95
-    max_tokens: 16000
-
-  # 推理模型（开启思考）
-  qwen3.5-27b-think:
-    provider: "default"
-    model: "qwen3.5-27b"
-    temperature: 0.6
-    max_tokens: 32000
-    extra_payload:
-      enable_thinking: true
-
-  # 外部模型示例
-  # external-gpt4:
-  #   base_url: "https://api.openai.com/v1"
-  #   api_key: "${OPENAI_API_KEY}"
-  #   model: "gpt-4-turbo"
-  #   temperature: 0.7
-  #   max_tokens: 16000
 
 # 场景化配置
 scenarios:
@@ -93,3 +71,11 @@ scenarios:
     model: "qwen3.5-27b"
     temperature: 0.6
     max_tokens: 32768
+
+  react_agent:
+    model: "qwen3.5-27b"
+    temperature: 0.7
+    top_p: 0.95
+    max_tokens: 32768
+    extra_payload:
+      enable_thinking: false
