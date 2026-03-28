@@ -29,51 +29,26 @@ executor:
     - kb_store
 ---
 
-# 看网能力工厂（设计态六步流程）
+# 看网能力工厂（元技能）
 
-## 适用场景
+## 三种模式
+- full: 完整六步 + 等待确认 + 沉淀
+- preview_only: 前五步（到报告预览），完成后提示是否沉淀
+- persist_only: 仅第六步（从 Redis 取缓存 context 执行沉淀）
 
-用户输入了超过 80 字的自然语言看网逻辑描述，希望系统将其结构化并沉淀为可复用的看网能力。
+## Sub-Skills（内部私有）
+1. intent-understand: 意图理解与泛化
+2. struct-extract: 信息提取与结构化
+3. outline-design: 生成可执行大纲
+4. data-binding: 数据源绑定
+5. report-preview: 报告预览
+6. skill-persist: 能力沉淀
 
-触发信号：用户描述了一套完整的分析思路，包含场景、指标、判断逻辑等要素。
-
-## 工作流（按序调用工具）
-
-```
-1. understand_intent(expert_input)
-   → 提取场景简介、触发关键词、用户问法变体
-   → 结果注入 session 上下文
-
-2. extract_structure(raw_input)
-   → 将看网逻辑格式化为结构化 Markdown
-   → 映射五层知识架构（场景→维度→指标→子指标→评估点）
-
-3. design_outline()
-   → 基于结构化文本生成五层大纲 JSON
-   → 大纲保存到当前会话
-
-4. bind_data()
-   → 为大纲底层评估指标节点绑定数据源（SQL/API/Mock）
-
-5. preview_report()
-   → 生成预览版报告 HTML，供用户确认
-   → 完成后等待用户确认
-
-6. [等待用户明确说"保存/沉淀/确认"] → persist_skill(context_key)
-   → 将设计态成果写入知识库，成为可复用能力
-```
-
-## 关键规则
-
-- 步骤 1-5 按序执行，每步等待结果后再执行下一步
-- **步骤 6（persist_skill）必须等用户明确说"保存/沉淀/确认"才执行，不得自动触发**
-- design_outline 失败时，说明知识库中哪些节点无法匹配，请用户补充信息
-- 整个流程是独立入口，不与运行态步骤（clip_outline/execute_data 等）组合使用
-
-## 三种执行模式
-
-| 模式 | 含义 | 触发条件 |
-|------|------|---------|
-| preview_only | 执行步骤 1-5，预览后等待确认 | 用户输入长文本但未明确要沉淀 |
-| full | 执行步骤 1-6，全流程 | 用户明确表示要沉淀 |
-| persist_only | 仅执行步骤 6 | 用户说"保存/沉淀"且已有预览缓存 |
+## Scripts
+- scripts/skill_factory_executor.py
+- scripts/sub_skills/intent_understand.py
+- scripts/sub_skills/struct_extract.py
+- scripts/sub_skills/outline_design.py
+- scripts/sub_skills/data_binding.py
+- scripts/sub_skills/report_preview.py
+- scripts/sub_skills/skill_persist.py
