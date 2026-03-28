@@ -18,10 +18,32 @@ executor:
 
 # 数据执行
 
-## 数据源类型
-- mock: MockDataService（当前默认）
-- sql: SQLDataService（预留）
-- api: APIDataService（预留）
+## 适用场景
 
-## Scripts
-- scripts/data_execute_executor.py
+在大纲生成（或裁剪/参数修改）后，需要获取各评估指标的实际数据。
+这是生成报告前的必要步骤。
+
+## 工作流（单步调用）
+
+```
+execute_data(session_id)
+→ 遍历当前大纲的所有 L5 评估指标节点
+→ 读取会话级参数条件（行业/阈值等，由 inject_params 注入）
+→ 按节点的数据绑定配置（Mock/SQL/API）执行查询
+→ 返回结构化数据结果，供 render_report 使用
+```
+
+## 关键规则
+
+- **必须在 render_report 之前调用**
+- 使用当前会话的大纲和参数条件（自动读取，无需手动传入）
+- 数据执行失败的节点会记录错误，不影响其他节点
+- 大纲裁剪或参数修改后，必须重新调用此工具（旧数据与新大纲不对应）
+
+## 数据源类型
+
+| 类型 | 说明 | 当前状态 |
+|------|------|---------|
+| mock | 模拟数据（MockDataService） | 默认启用 |
+| sql | SQL 查询 | 预留 |
+| api | 外部 API | 预留 |
