@@ -41,15 +41,44 @@ HISTORY_LIMIT = 20  # 注入的 chat_history 条数上限
 # ─── System Prompt 模板 ──────────────────────────────────────────────────────
 
 SYSTEM_PROMPT_TEMPLATE = """\
-你是看网系统智能助手，运行在 ReAct 模式下：通过工具调用感知环境、动态决策、逐步完成任务。
+你是看网系统智能助手，运行在 ReAct 模式下，帮助用户生成网络分析报告或创建新的看网能力。
 
-## 核心行为准则
-1. **先了解状态**：处理用户请求前，优先调用 get_session_status 了解当前上下文。
-2. **按需读取技能**：执行复杂任务前，先调用 read_skill_file 读取对应 SKILL.md 了解工作流。
-3. **感知中间结果**：每次工具调用后，基于结果决定下一步，而不是预先规划全部步骤。
-4. **不重复已完成的操作**：工具结果中已有数据时，不要重复调用相同工具。
-5. **等待用户确认**：persist_skill（沉淀能力）必须等用户明确说"保存/沉淀/确认"才调用。
+## 意图判断优先于一切（每次收到消息，先判断意图类型，再行动）
 
+### 类型 A：普通问答
+**识别**：用户提问（"XX是什么"/"如何做"/"解释"/"帮我了解"等），或不涉及报告生成的对话
+**处理**：**直接回答，不调用任何工具**
+**示例**：
+- "fgOTN 是什么？" → 直接解释，无需工具
+- "路由协议有哪些？" → 直接回答，无需工具
+- "大纲有哪几层？" → 直接说明，无需工具
+
+### 类型 B：运行态 —— 生成/刷新报告
+**识别**：用户提出看网分析需求（通常 ≤50 字），如"分析XX"/"生成XX报告"/"查看XX情况"
+**处理步骤**：
+1. 调用 get_session_status 了解当前会话是否已有大纲
+2. **无大纲** → 调用 search_skill(query) 检索已有看网能力
+   - 命中 → execute_data → render_report
+   - 未命中 → 告知用户暂无该场景能力，询问是否需要创建（**不要自动启动设计态流程**）
+3. **有大纲** → 直接 execute_data → render_report
+
+### 类型 C：运行态 —— 修改已有报告
+**识别**：用户对已有报告提出调整，如"不看XX"/"删除XX"/"只看XX行业"/"阈值改为XX"
+**处理步骤**：clip_outline（删除/筛选节点）或 inject_params（修改参数）→ execute_data → render_report
+
+### 类型 D：设计态 —— 创建新看网能力【严格门槛，不确定则先询问】
+**识别（必须同时满足以下两个条件）**：
+  ✅ 条件1：用户输入了 ≥100 字的完整看网逻辑描述，包含场景、指标、判断逻辑等要素
+  ✅ 条件2：用户明确表达了"创建"/"设计"/"沉淀"新能力的意图
+**处理步骤**：先调用 read_skill_file 读取 skill-factory 工作流，再按六步依序执行
+**注意**：不满足上述两个条件时，绝对不要调用 understand_intent 等设计态工具
+
+## 工具使用约束
+- **类型 A 不调用任何工具**，能直接答的问题直接答
+- **设计态工具有严格门槛**：understand_intent/extract_structure 等六步工具仅类型 D 可用
+- **search_skill 未命中时不自动触发设计态**，询问用户确认后才进行
+- **不重复已完成的操作**：工具结果中已有数据时不要重复调用相同工具
+- **persist_skill 必须等用户明确确认**：用户说"保存/沉淀/确认"才调用
 {skill_system_section}
 {memory_section}
 ## 当前会话 ID
@@ -96,11 +125,16 @@ class SimpleReActEngine:
 
     def _build_skill_system_section(self) -> str:
         """
-        动态从 SkillRegistry 生成 skill 索引，替代硬编码常量。
+        动态从 SkillRegistry 生成 skill 索引。
 
-        对齐原 LeadAgent.get_skills_prompt_section() 逻辑：
-          - 遍历所有已启用的 builtin + custom skills
-          - 每条包含 name、description、path（供 LLM 调用 read_skill_file 使用）
+        只列出以下两类 skill：
+          1. skill-factory（设计态能力工厂，带严格触发条件说明）
+          2. custom skills（用户已沉淀的看网能力，供运行态通过 search_skill 检索）
+
+        排除纯工具化的运行态 builtin skills（outline-generate/outline-clip/param-inject/
+        data-execute/report-generate），这些 skills 已通过工具函数（clip_outline/
+        execute_data 等）暴露给 LLM，LLM 不需要读取其 SKILL.md。
+        将它们列入索引会误导 LLM 在普通请求时也去读取 skill-factory 等文件。
         """
         if not self._reg:
             return ""
@@ -109,28 +143,47 @@ class SimpleReActEngine:
         if not skills:
             return ""
 
+        # 运行态工具型 builtin skills：已通过工具函数暴露，不在索引中展示
+        RUNTIME_TOOL_SKILLS = {
+            "outline-generate", "outline-clip", "param-inject",
+            "data-execute", "report-generate",
+        }
+
         items = []
         for s in skills:
-            # 生成相对路径，和 tool_registry._handle_read_skill_file 的路径修复保持一致：
-            # LLM 传 "skills/builtin/<n>/SKILL.md"，_handle_read_skill_file 会自动
-            # 剥离 "skills/" 前缀后拼接 _skills_root，最终定位到正确文件
-            source = s.source  # "builtin" 或 "custom"
+            if s.source == "builtin" and s.name in RUNTIME_TOOL_SKILLS:
+                continue  # 跳过：已通过工具函数暴露，无需在索引中出现
+
+            source = s.source
             rel_path = f"skills/{source}/{s.name}/SKILL.md"
+
+            # skill-factory 单独标注严格触发条件
+            trigger_line = ""
+            if s.name == "skill-factory":
+                trigger_line = (
+                    "\n    <trigger>仅当类型 D 条件满足时使用："
+                    "用户输入 ≥100 字看网逻辑 + 明确表达创建/沉淀新能力意图</trigger>"
+                )
+
             items.append(
                 f"  <skill>\n"
                 f"    <n>{s.name}</n>\n"
                 f"    <display_name>{s.display_name or s.name}</display_name>\n"
-                f"    <description>{s.description}</description>\n"
+                f"    <description>{s.description}</description>{trigger_line}\n"
                 f"    <path>{rel_path}</path>\n"
                 f"  </skill>"
             )
 
+        if not items:
+            return ""
+
         skills_xml = "<available_skills>\n" + "\n".join(items) + "\n</available_skills>"
         return (
-            "## 可用技能索引\n"
-            "以下技能的工作流指导在对应 SKILL.md 中。执行复杂任务时，先调用 read_skill_file 读取。\n"
-            "Progressive Loading：只在需要时读取，不要预先读取所有技能。\n\n"
+            "\n## 技能索引\n"
+            "skill-factory 仅在类型 D（设计态）条件满足时通过 read_skill_file 读取；\n"
+            "运行态操作（生成报告、裁剪大纲等）通过工具函数直接调用，无需读取 SKILL.md。\n\n"
             + skills_xml
+            + "\n"
         )
 
     def _build_system_prompt(self, session_id: str) -> str:

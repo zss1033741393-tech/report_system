@@ -203,9 +203,13 @@ UNDERSTAND_INTENT = {
     "function": {
         "name": "understand_intent",
         "description": (
-            "理解专家输入的看网逻辑，提取场景简介、触发关键词和用户问法变体。"
-            "这是 skill-factory 六步流程的第一步。"
-            "用户输入超过 80 字的自然语言看网逻辑描述时调用。"
+            "【设计态专用 —— 严格门槛】"
+            "仅当同时满足以下两个条件时才能调用："
+            "①用户输入了 ≥100 字的完整看网逻辑描述（含场景/指标/判断逻辑等要素）；"
+            "②用户明确表达了创建/设计/沉淀新看网能力的意图。"
+            "对于普通分析请求（如'分析网络容量'）、简短提问、修改报告等请求，"
+            "严禁调用此工具。这是 skill-factory 六步流程的第一步，"
+            "调用前应先通过 read_skill_file 读取 skill-factory 工作流。"
         ),
         "parameters": {
             "type": "object",
@@ -229,8 +233,11 @@ EXTRACT_STRUCTURE = {
     "function": {
         "name": "extract_structure",
         "description": (
+            "【设计态专用 —— 严格门槛】"
             "将看网逻辑格式化为结构化 Markdown，映射五层知识架构（场景→维度→指标）。"
-            "这是 skill-factory 的第二步，在 understand_intent 成功后调用。"
+            "这是 skill-factory 的第二步，必须在 understand_intent 成功返回后才能调用。"
+            "仅限设计态场景（用户输入 ≥100 字看网逻辑 + 明确创建意图），"
+            "运行态请求严禁调用。"
         ),
         "parameters": {
             "type": "object",
@@ -254,8 +261,10 @@ DESIGN_OUTLINE = {
     "function": {
         "name": "design_outline",
         "description": (
+            "【设计态专用 —— 严格门槛】"
             "基于结构化文本生成可执行的五层大纲 JSON（场景→维度→指标→子指标→评估点）。"
-            "这是 skill-factory 的第三步，在 extract_structure 成功后调用。"
+            "这是 skill-factory 的第三步，必须在 extract_structure 成功后才能调用。"
+            "仅限设计态场景，运行态请求严禁调用。"
         ),
         "parameters": {
             "type": "object",
@@ -275,8 +284,10 @@ BIND_DATA = {
     "function": {
         "name": "bind_data",
         "description": (
+            "【设计态专用 —— 严格门槛】"
             "为大纲底层评估指标节点绑定数据源（SQL/API/Mock）。"
-            "这是 skill-factory 的第四步，在 design_outline 成功后调用。"
+            "这是 skill-factory 的第四步，必须在 design_outline 成功后才能调用。"
+            "仅限设计态场景，运行态请求严禁调用。"
         ),
         "parameters": {
             "type": "object",
@@ -296,8 +307,11 @@ PREVIEW_REPORT = {
     "function": {
         "name": "preview_report",
         "description": (
+            "【设计态专用 —— 严格门槛】"
             "生成预览版报告 HTML，供用户确认看网逻辑是否符合预期。"
-            "这是 skill-factory 的第五步，完成后等待用户确认是否沉淀。"
+            "这是 skill-factory 的第五步，必须在 bind_data 成功后才能调用，"
+            "完成后等待用户明确确认是否沉淀，不得自动调用 persist_skill。"
+            "仅限设计态场景，运行态报告生成请使用 render_report 工具。"
         ),
         "parameters": {
             "type": "object",
@@ -317,9 +331,12 @@ PERSIST_SKILL = {
     "function": {
         "name": "persist_skill",
         "description": (
+            "【设计态专用 —— 严格门槛】"
             "将设计态成果沉淀为可复用的看网能力，写入知识库。"
             "这是 skill-factory 的第六步（最后一步）。"
-            "仅当用户明确说'保存'/'沉淀'/'确认'时才调用，不得自动执行。"
+            "调用条件：①已完成前五步（understand_intent→preview_report）；"
+            "②用户在看到预览报告后明确说'保存'/'沉淀'/'确认'。"
+            "不得自动执行，不得在未完成前五步时调用。"
         ),
         "parameters": {
             "type": "object",
