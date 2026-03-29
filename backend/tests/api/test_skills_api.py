@@ -10,18 +10,20 @@ from fastapi.testclient import TestClient
 
 
 def _make_mock_registry(skills: list[dict]):
-    """创建模拟 SkillRegistry，list_skills 返回指定列表。"""
+    """创建模拟 SkillRegistry，get_all() 返回指定列表。"""
     registry = MagicMock()
     mock_skills = []
     for s in skills:
         skill = MagicMock()
         skill.name = s["name"]
+        skill.display_name = s.get("display_name", s["name"])
         skill.description = s.get("description", "")
         skill.source = s.get("source", "builtin")
         skill.enabled = s.get("enabled", True)
+        skill.skill_dir = s.get("skill_dir", f"skills/builtin/{s['name']}")
         mock_skills.append(skill)
-    registry.list_skills = MagicMock(return_value=mock_skills)
-    registry.set_enabled = MagicMock(return_value=True)
+    # 实际路由调用 reg.get_all()，而非 list_skills
+    registry.get_all = MagicMock(return_value=mock_skills)
     registry.get = MagicMock(side_effect=lambda name: next(
         (s for s in mock_skills if s.name == name), None
     ))

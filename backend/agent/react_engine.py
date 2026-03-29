@@ -196,8 +196,8 @@ class SimpleReActEngine:
                         "content": tool_result_content,
                     })
 
-                    # 发送工具结果事件
-                    yield _ev("tool_result", name=tc_name, summary=tool_result_summary, success=tool_success)
+                    # 发送工具结果事件（携带 id，与 tool_call 事件对应）
+                    yield _ev("tool_result", id=tc_id, name=tc_name, summary=tool_result_summary, success=tool_success)
 
                 # 循环检测
                 status, loop_msg = loop_detector.check(tool_calls)

@@ -55,7 +55,10 @@ export function useConversation() {
   }
 
   function onToolResult(d) {
-    const tc = toolCalls.value.find(t => t.name === d.name && t.status === 'running')
+    // 优先按 id 精确匹配（后端 tool_result 携带 id），回退到 name+running 模糊匹配
+    const tc = d.id
+      ? toolCalls.value.find(t => t.id === d.id)
+      : toolCalls.value.find(t => t.name === d.name && t.status === 'running')
     if (tc) {
       tc.status = 'done'
       tc.summary = d.summary || ''
