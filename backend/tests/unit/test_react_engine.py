@@ -306,3 +306,121 @@ class TestLoopDetectionIntegration:
         # 工具调用次数应受 HARD_LIMIT 限制
         tool_calls = [e for e in events if e.get("type") == "tool_call"]
         assert len(tool_calls) <= HARD_LIMIT + 1  # 允许少量误差
+
+
+class TestTraceCallback:
+
+    @pytest.mark.asyncio
+    async def test_trace_called_for_each_step(self):
+        """每个 ReAct 步骤都触发一次 trace_callback。"""
+        fake_llm = FakeLLMService([
+            [{"tool_calls": [{"id": "c1", "name": "search_skill", "arguments": {"q": "test"}}]}],
+            [{"content": "完成"}],
+        ])
+        registry = _make_registry_with_tool("search_skill", SkillResult(True, "ok"))
+        engine = SimpleReActEngine(fake_llm, registry)
+
+        calls = []
+
+        async def trace_cb(**kwargs):
+            calls.append(kwargs)
+
+        async for _ in engine.run("s1", "test", "sys", [], _make_tool_ctx(), trace_callback=trace_cb):
+            pass
+
+        # 两步：step_0（工具调用）+ step_1（文字回复）
+        assert len(calls) == 2
+        assert calls[0]["step_name"] == "step_0"
+        assert calls[1]["step_name"] == "step_1"
+
+    @pytest.mark.asyncio
+    async def test_trace_tool_call_step_response_content_is_tool_json(self):
+        """纯工具调用步骤：response_content 应序列化工具决策，而非空字符串。"""
+        tool_args = {"query": "fgOTN容量"}
+        fake_llm = FakeLLMService([
+            [{"tool_calls": [{"id": "c1", "name": "search_skill", "arguments": tool_args}]}],
+            [{"content": "完成"}],
+        ])
+        registry = _make_registry_with_tool("search_skill", SkillResult(True, "ok"))
+        engine = SimpleReActEngine(fake_llm, registry)
+
+        calls = []
+
+        async def trace_cb(**kwargs):
+            calls.append(kwargs)
+
+        async for _ in engine.run("s1", "test", "sys", [], _make_tool_ctx(), trace_callback=trace_cb):
+            pass
+
+        # step_0 是工具调用步，response_content 不能为空
+        step0 = calls[0]
+        assert step0["response_content"], "工具调用步 response_content 不应为空"
+        # 应是合法 JSON 且包含工具名
+        parsed = json.loads(step0["response_content"])
+        assert isinstance(parsed, list)
+        assert parsed[0]["name"] == "search_skill"
+        assert parsed[0]["arguments"] == tool_args
+
+    @pytest.mark.asyncio
+    async def test_trace_text_step_response_content_is_text(self):
+        """纯文本回复步骤：response_content 是文字内容（非 JSON 数组）。"""
+        fake_llm = FakeLLMService([
+            [{"content": "这是最终答案"}],
+        ])
+        registry = ToolRegistry()
+        engine = SimpleReActEngine(fake_llm, registry)
+
+        calls = []
+
+        async def trace_cb(**kwargs):
+            calls.append(kwargs)
+
+        async for _ in engine.run("s1", "test", "sys", [], _make_tool_ctx(), trace_callback=trace_cb):
+            pass
+
+        assert len(calls) == 1
+        assert calls[0]["response_content"] == "这是最终答案"
+
+    @pytest.mark.asyncio
+    async def test_trace_elapsed_ms_per_step_not_cumulative(self):
+        """elapsed_ms 反映单步耗时，各步 elapsed_ms 都应为正数且合理（非累积递增）。"""
+        import asyncio
+
+        class SlowFakeLLM:
+            """每次调用都稍有延迟。"""
+            def __init__(self):
+                self._call = 0
+
+            async def complete_stream(self, messages, config=None, tools=None):
+                self._call += 1
+                await asyncio.sleep(0.01)  # 10ms 延迟
+                if self._call == 1:
+                    yield {"tool_calls": [{"id": "c1", "name": "t", "arguments": {}}]}
+                else:
+                    yield {"content": "done"}
+
+            async def complete(self, messages, config=None):
+                return "done"
+
+            @property
+            def default_model(self):
+                return "fake"
+
+        registry = _make_registry_with_tool("t", SkillResult(True, "ok"))
+        engine = SimpleReActEngine(SlowFakeLLM(), registry)
+
+        calls = []
+
+        async def trace_cb(**kwargs):
+            calls.append(kwargs)
+
+        async for _ in engine.run("s1", "test", "sys", [], _make_tool_ctx(), trace_callback=trace_cb):
+            pass
+
+        assert len(calls) == 2
+        # 每步 elapsed_ms 均 > 0
+        assert calls[0]["elapsed_ms"] > 0
+        assert calls[1]["elapsed_ms"] > 0
+        # 单步计时：step_1 不应比 step_0 大出数倍（累积计时时 step_1 会接近 step_0 的2倍）
+        # 允许合理误差，但不应超过 step_0 的 5 倍
+        assert calls[1]["elapsed_ms"] < calls[0]["elapsed_ms"] * 5

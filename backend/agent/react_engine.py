@@ -75,8 +75,6 @@ class SimpleReActEngine:
         messages.extend(chat_history[-20:] if len(chat_history) > 20 else chat_history)
         messages.append({"role": "user", "content": user_message})
 
-        t0 = time.perf_counter()
-
         for step in range(MAX_STEPS):
             # ① 上下文压缩检查
             if should_compress(messages):
@@ -90,6 +88,7 @@ class SimpleReActEngine:
             reasoning_parts: list[str] = []
             tool_calls: list[dict] = []
             llm_error = None
+            t0 = time.perf_counter()  # 每步单独计时
 
             try:
                 async for chunk in self._llm.complete_stream(messages, cfg, tools=tool_schemas):
@@ -113,14 +112,23 @@ class SimpleReActEngine:
             reasoning_text = "".join(reasoning_parts)
 
             # 记录 LLM trace（如有 callback）
+            # response_content：有文字用文字；纯工具调用时序列化 tool_calls 决策
             if trace_callback:
                 try:
                     elapsed = (time.perf_counter() - t0) * 1000
+                    if tool_calls and not content_text:
+                        trace_response = json.dumps(
+                            [{"name": tc.get("name"), "arguments": tc.get("arguments")}
+                             for tc in tool_calls],
+                            ensure_ascii=False,
+                        )
+                    else:
+                        trace_response = content_text
                     await trace_callback(
                         llm_type="react_engine",
                         step_name=f"step_{step}",
                         request_messages=messages,
-                        response_content=content_text,
+                        response_content=trace_response,
                         reasoning_content=reasoning_text,
                         model=cfg.model or self._llm.default_model,
                         temperature=cfg.temperature,

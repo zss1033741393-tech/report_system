@@ -47,6 +47,10 @@ class FakeLLMService:
         chunks = next(self._rounds, [{"content": ""}])
         return "".join(c.get("content", "") for c in chunks)
 
+    @property
+    def default_model(self) -> str:
+        return "fake-model"
+
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
