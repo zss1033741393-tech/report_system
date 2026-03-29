@@ -182,9 +182,6 @@ class LLMService:
                             _stream_done = True
                             break
 
-                    if _stream_done:
-                        break
-
                         try:
                             chunk_data = json.loads(data_str)
                             choices = chunk_data.get("choices", [{}])
@@ -239,8 +236,12 @@ class LLMService:
                             if output:
                                 yield output
 
-                        except (json.JSONDecodeError, KeyError, IndexError):
+                        except (json.JSONDecodeError, KeyError, IndexError) as e:
+                            logger.warning(f"LLM chunk 解析失败（跳过）: {e}")
                             continue
+
+                    if _stream_done:
+                        break
 
                 # 流式结束：flush 累积的 tool_calls
                 if _tc_buf:

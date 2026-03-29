@@ -42,6 +42,7 @@ async def _read_skill_file(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[
         else:
             yield {"result": SkillResult(False, f"未找到文件: {path}")}
     except Exception as e:
+        logger.error(f"read_skill_file 失败 path={path}: {e}", exc_info=True)
         yield {"result": SkillResult(False, f"读取失败: {e}")}
 
 
@@ -57,8 +58,8 @@ async def _get_session_status(args: dict, tool_ctx: ToolContext) -> AsyncGenerat
             cached = await tool_ctx.session_service.redis.get(f"skill_factory_ctx:{sid}")
             if cached:
                 cached_ctx_key = sid
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Redis 缓存检查失败（可忽略）: {e}")
         # 检查 pending_confirm
         pending = await tool_ctx.session_service.get_pending_confirm(sid)
 
@@ -82,6 +83,7 @@ async def _get_session_status(args: dict, tool_ctx: ToolContext) -> AsyncGenerat
 
         yield {"result": SkillResult(True, "已获取会话状态", data=status)}
     except Exception as e:
+        logger.error(f"get_session_status 失败 session={tool_ctx.session_id}: {e}", exc_info=True)
         yield {"result": SkillResult(False, f"获取状态失败: {e}")}
 
 
@@ -97,9 +99,11 @@ async def _search_skill(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dic
 
     executor = tool_ctx.loader.get_executor("outline-generate")
     if not executor:
+        logger.error("search_skill: outline-generate 执行器未加载")
         yield {"result": SkillResult(False, "outline-generate 执行器未加载")}
         return
 
+    logger.info(f"search_skill: query={query!r} session={tool_ctx.session_id}")
     skill_ctx = SkillContext(
         session_id=tool_ctx.session_id,
         user_message=query,
@@ -123,7 +127,9 @@ async def _search_skill(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dic
         elif isinstance(item, str):
             yield {"sse": item}
 
-    yield {"result": result or SkillResult(False, "大纲搜索失败")}
+    final = result or SkillResult(False, "大纲搜索失败")
+    logger.info(f"search_skill: 完成 success={final.success} summary={final.summary!r}")
+    yield {"result": final}
 
 
 async def _get_current_outline(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
@@ -137,6 +143,7 @@ async def _get_current_outline(args: dict, tool_ctx: ToolContext) -> AsyncGenera
         else:
             yield {"result": SkillResult(False, "当前会话没有大纲")}
     except Exception as e:
+        logger.error(f"get_current_outline 失败 session={tool_ctx.session_id}: {e}", exc_info=True)
         yield {"result": SkillResult(False, f"获取大纲失败: {e}")}
 
 
@@ -230,7 +237,9 @@ async def _execute_data(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dic
         elif isinstance(item, str):
             yield {"sse": item}
 
-    yield {"result": result or SkillResult(False, "数据执行失败")}
+    final = result or SkillResult(False, "数据执行失败")
+    logger.info(f"execute_data: 完成 success={final.success} session={tool_ctx.session_id}")
+    yield {"result": final}
 
 
 async def _render_report(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
@@ -259,7 +268,9 @@ async def _render_report(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[di
         elif isinstance(item, str):
             yield {"sse": item}
 
-    yield {"result": result or SkillResult(False, "报告生成失败")}
+    final = result or SkillResult(False, "报告生成失败")
+    logger.info(f"render_report: 完成 success={final.success} session={tool_ctx.session_id}")
+    yield {"result": final}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
