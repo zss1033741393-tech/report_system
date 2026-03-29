@@ -165,6 +165,7 @@ class LLMService:
                     return
 
                 buffer = bytearray()
+                _stream_done = False
                 async for raw_bytes in resp.content:
                     buffer.extend(raw_bytes)
 
@@ -178,7 +179,11 @@ class LLMService:
 
                         data_str = line_bytes[5:].strip()
                         if data_str == b'[DONE]':
-                            return
+                            _stream_done = True
+                            break
+
+                    if _stream_done:
+                        break
 
                         try:
                             chunk_data = json.loads(data_str)

@@ -15,6 +15,7 @@
 }
 """
 
+import copy
 import json
 import logging
 import os
@@ -47,18 +48,18 @@ class MemoryStore:
 
     def load(self) -> dict:
         if not os.path.isfile(self._path):
-            return dict(_EMPTY_MEMORY)
+            return copy.deepcopy(_EMPTY_MEMORY)
         try:
             with open(self._path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             # 兼容旧格式：补全缺失字段
             for key, default in _EMPTY_MEMORY.items():
                 if key not in data:
-                    data[key] = default
+                    data[key] = copy.deepcopy(default)
             return data
         except Exception as e:
             logger.warning(f"MemoryStore: 读取失败，返回空记忆: {e}")
-            return dict(_EMPTY_MEMORY)
+            return copy.deepcopy(_EMPTY_MEMORY)
 
     def save(self, data: dict):
         """原子写：先写临时文件，再 rename。"""
@@ -120,7 +121,7 @@ class MemoryStore:
         return current
 
     def clear(self):
-        self.save(dict(_EMPTY_MEMORY))
+        self.save(copy.deepcopy(_EMPTY_MEMORY))
 
     def format_for_injection(self, max_tokens: int = 2000) -> str:
         """格式化记忆内容，注入 system prompt 的 <memory> 块。"""
