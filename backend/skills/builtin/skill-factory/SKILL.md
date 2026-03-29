@@ -29,26 +29,46 @@ executor:
     - kb_store
 ---
 
-# 看网能力工厂（元技能）
+# 看网能力工厂（设计态六步工作流）
 
-## 三种模式
-- full: 完整六步 + 等待确认 + 沉淀
-- preview_only: 前五步（到报告预览），完成后提示是否沉淀
-- persist_only: 仅第六步（从 Redis 取缓存 context 执行沉淀）
+## 适用场景
+用户输入了超过 80 字的自然语言看网逻辑描述，希望将其结构化并固化为可复用的分析能力。
 
-## Sub-Skills（内部私有）
-1. intent-understand: 意图理解与泛化
-2. struct-extract: 信息提取与结构化
-3. outline-design: 生成可执行大纲
-4. data-binding: 数据源绑定
-5. report-preview: 报告预览
-6. skill-persist: 能力沉淀
+## 工具调用顺序（严格按序执行）
 
-## Scripts
-- scripts/skill_factory_executor.py
-- scripts/sub_skills/intent_understand.py
-- scripts/sub_skills/struct_extract.py
-- scripts/sub_skills/outline_design.py
-- scripts/sub_skills/data_binding.py
-- scripts/sub_skills/report_preview.py
-- scripts/sub_skills/skill_persist.py
+### 第一步：understand_intent(expert_input)
+理解专家输入的看网逻辑，提取：
+- scene_intro：50字以内的场景简介
+- keywords：3-5个关键词
+- query_variants：3种用户可能的问法变体
+- skill_name：英文下划线格式的技能名称
+
+### 第二步：extract_structure(expert_input)
+将看网逻辑格式化为五层知识架构的结构化文本：
+- L1 评估对象（如 fgOTN 网络）
+- L2 评估维度（如 容量维度、时延维度）
+- L3 子维度（如 站间容量、本地容量）
+- L4 指标（如 站间最大配置容量）
+- L5 数据（具体数值/计算规则）
+
+### 第三步：design_outline(expert_input)
+基于结构化文本生成可执行大纲 JSON（五层树形结构）。
+若知识库中某些节点无法匹配，说明缺失节点并继续设计可用的部分。
+
+### 第四步：bind_data(expert_input)
+为大纲底层 L5 指标节点绑定数据源（SQL/API/Mock）。
+每个 L5 节点需指定：data_type, source_type, query_template, display_config。
+
+### 第五步：preview_report(expert_input)
+生成预览版报告 HTML，向用户展示最终效果。
+预览完成后，向用户展示报告并询问是否保存为可复用能力。
+
+### 第六步：persist_skill(context_key)
+【重要约束】仅在用户明确说"保存/沉淀/确认保存"后才调用此工具。
+将设计态成果写入系统：SKILL.md + outline.json + bindings.json + Neo4j + FAISS。
+
+## 关键规则
+- 步骤 1-5 自动按序执行，每步等待结果后再执行下一步
+- 步骤 6 必须等用户明确确认才执行
+- design_outline 失败时说明知识库中哪些节点无法匹配，继续处理可用部分
+- 整个流程中保持 expert_input 一致（作为各步骤的上下文参考）

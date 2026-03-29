@@ -7,6 +7,10 @@
     <div class="cm__body">
       <ThinkingBlock v-if="msg.metadata?.thinking?.length" :steps="msg.metadata.thinking" :initial-collapsed="true" />
       <SkillFactoryProgress v-if="msg.metadata?.design_steps?.length" :design-steps="msg.metadata.design_steps" />
+      <!-- 工具调用记录 -->
+      <div v-if="msg.metadata?.tool_calls?.length" class="tool-calls">
+        <ToolCallBlock v-for="(tc, i) in msg.metadata.tool_calls" :key="i" :call="tc" />
+      </div>
       <div class="cm__c" v-html="rendered"></div>
       <!-- 大纲折叠 -->
       <div v-if="msg.metadata?.outline_md" class="attach">
@@ -48,6 +52,7 @@
 import { ref, computed } from 'vue'
 import ThinkingBlock from './ThinkingBlock.vue'
 import SkillFactoryProgress from './SkillFactoryProgress.vue'
+import ToolCallBlock from './ToolCallBlock.vue'
 const props = defineProps({ msg:{type:Object,required:true} })
 defineEmits(['confirm'])
 const outExp = ref(false), rptExp = ref(false)
@@ -76,6 +81,9 @@ function renderMd(md) { return (md||'').split('\n').map(l=>{const m=l.match(/^(#
 
 .cm__time { font-size: var(--text-xs); color: var(--c-text-tertiary); margin-top: var(--sp-xs) }
 .cm--user .cm__time { text-align: right }
+
+/* 工具调用区 */
+.tool-calls { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
 
 /* 折叠附件 */
 .attach { margin-top: var(--sp-sm); border: 1px solid var(--c-border); border-radius: var(--r-sm); overflow: hidden }

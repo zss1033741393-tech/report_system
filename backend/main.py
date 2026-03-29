@@ -30,6 +30,8 @@ from agent.skill_loader import SkillLoader
 from agent.service_container import ServiceContainer
 from routers.chat import router as chat_router
 from routers.admin import router as admin_router
+from routers.skills import router as skills_router
+from agent.memory import MemoryStore, MemoryQueue, MemoryUpdater
 from utils.log_setup import setup_logging
 
 setup_logging(log_dir=settings.LOG_DIR, level=settings.LOG_LEVEL)
@@ -108,15 +110,20 @@ async def lifespan(app: FastAPI):
     loader.auto_load_all(container)
     logger.info(f"已加载执行器: {loader.loaded_skills()}")
 
-    # ─── 4. 组装 Agent ───
+    # ─── 4. Memory 系统 ───
+    memory_store = MemoryStore(memory_file=os.path.join(settings.DB_DIR, "memory.json"))
+    memory_queue = MemoryQueue()
+    memory_updater = MemoryUpdater(llm_service, memory_store, memory_queue)
+
+    # ─── 5. 组装 Agent ───
     mw = MiddlewareChain([
         HistoryMiddleware(chat_history),
         OutlineStateMiddleware(chat_history),
         PendingConfirmMiddleware(session_service),
     ])
-    lead_agent = LeadAgent(llm_service, mw, registry, loader, chat_history, session_service)
+    lead_agent = LeadAgent(llm_service, mw, registry, loader, chat_history, session_service, memory_store=memory_store, memory_updater=memory_updater)
 
-    # ─── 5. 全局状态 ───
+    # ─── 6. 全局状态 ───
     app_state.update({
         "lead_agent": lead_agent,
         "chat_history": chat_history,
@@ -126,13 +133,17 @@ async def lifespan(app: FastAPI):
         "faiss_retriever": faiss_retriever,
         "kb_store": kb_store,
         "container": container,
+        "memory_store": memory_store,
+        "skill_registry": registry,
     })
 
+    memory_updater.start()
     logger.info("========== 初始化完成 ==========")
     yield
 
     # ─── 清理 ───
     logger.info("========== 关闭 ==========")
+    await memory_updater.stop()
     await neo4j_retriever.close()
     await session_service.close()
     await chat_history.close()
@@ -144,6 +155,7 @@ app = FastAPI(title="报告生成系统", version="3.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(chat_router)
 app.include_router(admin_router)
+app.include_router(skills_router)
 
 
 @app.get("/health")

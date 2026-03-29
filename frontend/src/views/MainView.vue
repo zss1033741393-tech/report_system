@@ -1,10 +1,21 @@
 <template>
   <div class="app">
-    <aside class="sidebar"><SessionList :sessions="sessions" :active-id="sid" @select="switchSession" @new-session="newSession" @delete="delSession" /></aside>
+    <aside class="sidebar">
+      <div class="sidebar__tabs">
+        <button :class="['stab', {active: sideTab==='sessions'}]" @click="sideTab='sessions'" title="会话">💬</button>
+        <button :class="['stab', {active: sideTab==='memory'}]" @click="sideTab='memory'" title="记忆">🧠</button>
+        <button :class="['stab', {active: sideTab==='skills'}]" @click="sideTab='skills'" title="技能">⚙️</button>
+      </div>
+      <div class="sidebar__body">
+        <SessionList v-if="sideTab==='sessions'" :sessions="sessions" :active-id="sid" @select="switchSession" @new-session="newSession" @delete="delSession" />
+        <MemoryPanel v-else-if="sideTab==='memory'" />
+        <SkillsManager v-else-if="sideTab==='skills'" />
+      </div>
+    </aside>
     <section :class="['chat', {'chat--full': !showRight}]">
       <div class="chat__msgs" ref="msgsCtn">
         <!-- 欢迎页 -->
-        <div v-if="!messages.length && !thinkSteps.length" class="welcome">
+        <div v-if="!conv.messages.value.length && !thinkSteps.length" class="welcome">
           <div class="welcome__hero">
             <div class="welcome__icon">
               <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><rect width="48" height="48" rx="12" fill="var(--c-primary-bg)"/><path d="M14 20h20M14 28h12M24 14l8 6-8 6" stroke="var(--c-primary)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -27,10 +38,13 @@
           <p class="welcome__hint">输入分析需求开始对话，或点击上方示例快速体验</p>
         </div>
         <!-- 消息列表 -->
-        <ChatMessage v-for="m in messages" :key="m.id||m._tid" :msg="m" @confirm="onConfirm" />
-        <div v-if="thinkSteps.length || streamReply || designSteps.length" class="cur">
+        <ChatMessage v-for="m in conv.messages.value" :key="m.id||m._tid" :msg="m" @confirm="onConfirm" />
+        <div v-if="thinkSteps.length || streamReply || designSteps.length || conv.toolCalls.value.length" class="cur">
           <SkillFactoryProgress v-if="designSteps.length" :design-steps="designSteps" />
           <ThinkingBlock v-if="thinkSteps.length" :steps="thinkSteps" />
+          <div v-if="conv.toolCalls.value.length" class="cur-toolcalls">
+            <ToolCallBlock v-for="(tc, i) in conv.toolCalls.value" :key="i" :call="tc" />
+          </div>
           <ChatMessage v-if="streamReply" :msg="{role:'assistant',content:streamReply,msg_type:'text',created_at:new Date().toISOString()}" />
         </div>
       </div>
@@ -43,7 +57,7 @@
     <transition name="sp">
       <section v-if="showRight" class="right-side">
         <RightPanel
-          :outline-content="outContent" :outline-loading="outLoading" :anchor="anchor"
+          :outline-content="outContent" :outline-loading="outLoading" :anchor="conv.anchorInfo.value"
           :report-html="reportHtml" :report-title="reportTitle" :report-loading="reportLoading"
           :has-report="hasReport" :has-outline="hasOutline"
           @close="showRight=false" />
@@ -53,7 +67,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { v4 as uuidv4 } from 'uuid'
 import SessionList from '../components/SessionList.vue'
 import ChatMessage from '../components/ChatMessage.vue'
@@ -61,15 +75,27 @@ import QueryInput from '../components/QueryInput.vue'
 import RightPanel from '../components/RightPanel.vue'
 import ThinkingBlock from '../components/ThinkingBlock.vue'
 import SkillFactoryProgress from '../components/SkillFactoryProgress.vue'
-import { sendMessage, fetchSessions, fetchMessages, fetchOutlineState, deleteSession } from '../utils/sse.js'
+import ToolCallBlock from '../components/ToolCallBlock.vue'
+import MemoryPanel from '../components/MemoryPanel.vue'
+import SkillsManager from '../components/SkillsManager.vue'
+import { sendMessage, fetchSessions, deleteSession } from '../utils/sse.js'
+import { useConversation } from '../composables/useConversation.js'
 
-const sessions = ref([]), sid = ref(''), messages = ref([]), loading = ref(false)
-const outContent = ref(''), outLoading = ref(false), anchor = ref(null), streamReply = ref('')
-const reportHtml = ref(''), reportTitle = ref(''), reportLoading = ref(false)
+const conv = useConversation()
+
+const sessions = ref([]), sid = ref(''), loading = ref(false)
+const outLoading = ref(false), streamReply = ref('')
+const reportLoading = ref(false)
 const msgsCtn = ref(null), showRight = ref(false)
-const hasOutline = ref(false), hasReport = ref(false)
 const thinkSteps = ref([]), designSteps = ref([])
+const sideTab = ref('sessions')
 let ctrl = null
+
+const hasOutline = computed(() => !!conv.outline.value)
+const hasReport = computed(() => !!conv.report.value)
+const outContent = computed(() => conv.outline.value ? rJson(conv.outline.value) : '')
+const reportHtml = computed(() => conv.report.value?.html || '')
+const reportTitle = computed(() => conv.report.value?.title || '')
 
 const exampleGroups = [
   { icon: '🔍', label: '快速分析', items: ['帮我分析政企OTN升级的机会点', 'fgOTN部署，从时延方面分析'] },
@@ -84,32 +110,22 @@ async function switchSession(id) {
   if (ctrl) { ctrl.abort(); ctrl = null }
   loading.value = false; outLoading.value = false; reportLoading.value = false
   streamReply.value = ''; thinkSteps.value = []; designSteps.value = []
-  reportHtml.value = ''; reportTitle.value = ''
   sid.value = id
-  try { messages.value = await fetchMessages(id) } catch { messages.value = [] }
-  try {
-    const s = await fetchOutlineState(id)
-    if (s?.outline_json) { outContent.value = rJson(s.outline_json); anchor.value = s.anchor_info; hasOutline.value = true }
-    else { outContent.value = ''; anchor.value = null; hasOutline.value = false }
-  } catch { outContent.value = ''; anchor.value = null; hasOutline.value = false }
-  hasReport.value = false
-  for (let i = messages.value.length - 1; i >= 0; i--) {
-    const meta = messages.value[i].metadata
-    if (meta?.report_html) { reportHtml.value = meta.report_html; reportTitle.value = meta.report_title || '报告'; hasReport.value = true; break }
-  }
+  await conv.loadSession(id)
   showRight.value = hasOutline.value || hasReport.value
   await scroll()
 }
 
 async function newSession() {
-  sid.value = uuidv4(); messages.value = []; outContent.value = ''; anchor.value = null
+  sid.value = uuidv4()
+  conv.reset()
   streamReply.value = ''; thinkSteps.value = []; designSteps.value = []
-  reportHtml.value = ''; reportTitle.value = ''
-  hasOutline.value = false; hasReport.value = false; showRight.value = false
+  showRight.value = false
   await loadSessions()
 }
 async function delSession(id) {
-  try { await deleteSession(id); await loadSessions()
+  try {
+    await deleteSession(id); await loadSessions()
     if (id === sid.value) { sessions.value.length ? await switchSession(sessions.value[0].id) : await newSession() }
   } catch {}
 }
@@ -117,9 +133,9 @@ async function delSession(id) {
 function send(text) {
   if (!text.trim() || loading.value) return
   if (!sid.value) sid.value = uuidv4()
-  messages.value.push({ _tid: Date.now(), role: 'user', content: text, msg_type: 'text', created_at: new Date().toISOString() })
+  conv.addMessage({ _tid: Date.now(), role: 'user', content: text, msg_type: 'text', created_at: new Date().toISOString() })
   scroll(); loading.value = true; streamReply.value = ''; outLoading.value = false; reportLoading.value = false
-  thinkSteps.value = []; designSteps.value = []
+  thinkSteps.value = []; designSteps.value = []; conv.clearToolCalls()
   let outStarted = false, reportStarted = false, compThinking = null, outMdSnap = ''
   ctrl = sendMessage(sid.value, text, {
     onThinkingStep(d) {
@@ -127,57 +143,68 @@ function send(text) {
       thinkSteps.value.push(d); scroll()
     },
     onThinkingComplete(t) { compThinking = t },
+    onToolCall(d) { conv.onToolCall(d); scroll() },
+    onToolResult(d) { conv.onToolResult(d); scroll() },
     onChatReply(c) { streamReply.value = c; scroll() },
     onOutlineChunk(c) {
-      if (!outStarted) { outContent.value = ''; outLoading.value = true; outStarted = true; showRight.value = true; hasOutline.value = true; outMdSnap = '' }
-      outContent.value += c; outMdSnap += c
+      if (!outStarted) { conv.updateOutline(null, null); outLoading.value = true; outStarted = true; showRight.value = true; outMdSnap = '' }
+      outMdSnap += c
     },
-    onOutlineDone(a) { outLoading.value = false; anchor.value = a },
-    onOutlineUpdated(j) { if (j) { const md = rJson(j); outContent.value = md; outMdSnap = md; hasOutline.value = true; showRight.value = true } },
+    onOutlineDone(a) { outLoading.value = false; if (a) conv.anchorInfo.value = a },
+    onOutlineUpdated(j) {
+      if (j) { conv.updateOutline(j, conv.anchorInfo.value); showRight.value = true }
+    },
     onOutlineClipped() {},
     onReportChunk(c) {
-      if (!reportStarted) { reportHtml.value = ''; reportLoading.value = true; reportStarted = true; showRight.value = true; hasReport.value = true }
-      reportHtml.value += c
+      if (!reportStarted) {
+        conv.updateReport('', '')
+        reportLoading.value = true; reportStarted = true; showRight.value = true
+      }
+      if (conv.report.value) conv.report.value.html += c
     },
-    onReportDone(d) { reportLoading.value = false; reportTitle.value = d?.title || '报告'; hasReport.value = true },
+    onReportDone(d) { reportLoading.value = false; if (conv.report.value) conv.report.value.title = d?.title || '报告' },
     onDesignStep(d) {
       const existing = designSteps.value.find(s => s.step === d.step)
       if (existing) { Object.assign(existing, d) } else { designSteps.value.push(d) }
       scroll()
     },
     onPersistPrompt(d) {
-      messages.value.push({ _tid: Date.now(), role: 'assistant', content: d.message, msg_type: 'persist_prompt',
+      conv.addMessage({ _tid: Date.now(), role: 'assistant', content: d.message, msg_type: 'persist_prompt',
         metadata: { context_key: d.context_key }, created_at: new Date().toISOString() })
       scroll()
     },
     onSkillPersisted(d) {
-      messages.value.push({ _tid: Date.now(), role: 'assistant', content: `看网能力「${d.skill_name}」已沉淀到 ${d.skill_dir}`,
+      conv.addMessage({ _tid: Date.now(), role: 'assistant', content: `看网能力「${d.skill_name}」已沉淀到 ${d.skill_dir}`,
         msg_type: 'text', created_at: new Date().toISOString() })
     },
     onDataExecuting() {}, onDataExecuted() {}, onConfirmRequired() {},
-    onError(m) { streamReply.value = ''; messages.value.push({ _tid: Date.now(), role: 'assistant', content: m, msg_type: 'error', created_at: new Date().toISOString() }); scroll() },
+    onError(m) {
+      streamReply.value = ''
+      conv.addMessage({ _tid: Date.now(), role: 'assistant', content: m, msg_type: 'error', created_at: new Date().toISOString() })
+      scroll()
+    },
     onDone() {
       loading.value = false; outLoading.value = false; reportLoading.value = false
       const meta = {}
       if (compThinking?.length) meta.thinking = compThinking; else if (thinkSteps.value.length) meta.thinking = [...thinkSteps.value]
       if (outMdSnap) meta.outline_md = outMdSnap
       if (designSteps.value.length) meta.design_steps = [...designSteps.value]
-      if (reportHtml.value) meta.report_html = reportHtml.value
-      if (reportTitle.value) meta.report_title = reportTitle.value
+      if (conv.toolCalls.value.length) meta.tool_calls = [...conv.toolCalls.value]
+      if (conv.report.value?.html) { meta.report_html = conv.report.value.html; meta.report_title = conv.report.value.title }
       const content = streamReply.value || (designSteps.value.length ? '看网能力分析完成' : '处理完成')
-      messages.value.push({
+      conv.addMessage({
         _tid: Date.now(), role: 'assistant', content, msg_type: designSteps.value.length ? 'design_result' : 'text',
         created_at: new Date().toISOString(), metadata: Object.keys(meta).length ? meta : null
       })
-      streamReply.value = ''; thinkSteps.value = []; designSteps.value = []; scroll(); loadSessions()
+      streamReply.value = ''; thinkSteps.value = []; designSteps.value = []; conv.clearToolCalls(); scroll(); loadSessions()
     }
   })
 }
 
 function onConfirm(a) {
   if (a.action === 'persist') {
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      const m = messages.value[i]
+    for (let i = conv.messages.value.length - 1; i >= 0; i--) {
+      const m = conv.messages.value[i]
       if (m.msg_type === 'persist_prompt' && m.metadata?.context_key) { send(`保存为看网能力，context_key=${m.metadata.context_key}`); return }
     }
     send('保存为看网能力')
@@ -195,7 +222,12 @@ function rJson(tree, d = 0) {
 
 <style scoped>
 .app { display: flex; height: 100vh; overflow: hidden; background: var(--c-bg); font-family: var(--font-sans) }
-.sidebar { width: 260px; flex-shrink: 0 }
+.sidebar { width: 260px; flex-shrink: 0; display: flex; flex-direction: column }
+.sidebar__tabs { display: flex; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--c-border); background: var(--c-bg-muted) }
+.stab { flex: 1; background: transparent; border: none; cursor: pointer; padding: 6px; border-radius: 4px; font-size: 16px; transition: background 0.15s }
+.stab:hover { background: var(--c-border) }
+.stab.active { background: var(--c-primary-bg) }
+.sidebar__body { flex: 1; overflow-y: auto }
 .chat { flex: 4; min-width: 320px; display: flex; flex-direction: column; border-left: 1px solid var(--c-border); border-right: 1px solid var(--c-border); background: var(--c-bg-elevated); transition: flex .3s var(--ease) }
 .chat--full { flex: 10 }
 .chat__msgs { flex: 1; overflow-y: auto; padding: var(--sp-md) var(--sp-lg) }

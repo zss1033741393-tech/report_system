@@ -21,6 +21,8 @@ export function sendMessage(sid, message, cb) {
             case 'chat_reply': cb.onChatReply?.(d.content); break
             case 'thinking_step': cb.onThinkingStep?.(d); break
             case 'thinking_complete': cb.onThinkingComplete?.(d.thinking); break
+            case 'tool_call': cb.onToolCall?.(d); break
+            case 'tool_result': cb.onToolResult?.(d); break
             case 'outline_chunk': cb.onOutlineChunk?.(d.content); break
             case 'outline_done': cb.onOutlineDone?.(d.anchor); break
             case 'outline_updated': cb.onOutlineUpdated?.(d.outline_json); break
@@ -49,4 +51,9 @@ export async function fetchSessions(limit=50) { const r=await fetch(`${API}/api/
 export async function createSession() { const r=await fetch(`${API}/api/v1/sessions`,{method:'POST'}); return await r.json() }
 export async function fetchMessages(sid,limit=100) { const r=await fetch(`${API}/api/v1/sessions/${sid}/messages?limit=${limit}`); return (await r.json()).messages||[] }
 export async function fetchOutlineState(sid) { const r=await fetch(`${API}/api/v1/sessions/${sid}/outline`); return await r.json() }
+export async function fetchArtifacts(sid) { try { const r=await fetch(`${API}/api/v1/sessions/${sid}/artifacts`); return await r.json() } catch { return {} } }
 export async function deleteSession(sid) { await fetch(`${API}/api/v1/sessions/${sid}`,{method:'DELETE'}) }
+export async function fetchMemory() { try { const r=await fetch(`${API}/api/v1/memory`); return await r.json() } catch { return {} } }
+export async function clearMemory() { await fetch(`${API}/api/v1/memory`,{method:'DELETE'}) }
+export async function fetchSkills() { try { const r=await fetch(`${API}/api/v1/skills`); return (await r.json()).skills||[] } catch { return [] } }
+export async function toggleSkill(name,enabled) { await fetch(`${API}/api/v1/skills/${name}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})}) }

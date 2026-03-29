@@ -9,6 +9,8 @@ def _agent():
     from main import app_state; return app_state["lead_agent"]
 def _ch():
     from main import app_state; return app_state["chat_history"]
+def _memory():
+    from main import app_state; return app_state.get("memory_store")
 
 @router.post("/chat")
 async def chat(req: ChatRequest, agent=Depends(_agent)):
@@ -32,6 +34,40 @@ async def get_messages(sid:str, limit:int=100, h=Depends(_ch)):
 async def get_outline(sid:str, h=Depends(_ch)):
     s = await h.get_outline_state(sid); return s or {"outline_json":None,"anchor_info":None}
 
+@router.get("/sessions/{sid}/artifacts")
+async def get_artifacts(sid:str, h=Depends(_ch)):
+    """获取会话产物：大纲 JSON + 报告 HTML（替代前端遍历消息的脆弱逻辑）。"""
+    outline_state = await h.get_outline_state(sid)
+    # 从最近消息中找报告
+    messages = await h.get_messages(sid, limit=100)
+    report_html, report_title = "", ""
+    for m in reversed(messages):
+        meta = m.get("metadata") or {}
+        if meta.get("report_html"):
+            report_html = meta["report_html"]
+            report_title = meta.get("report_title", "报告")
+            break
+    return {
+        "outline_json": outline_state.get("outline_json") if outline_state else None,
+        "anchor_info": outline_state.get("anchor_info") if outline_state else None,
+        "report_html": report_html,
+        "report_title": report_title,
+    }
+
 @router.delete("/sessions/{sid}")
 async def delete_session(sid:str, h=Depends(_ch)):
     await h.delete_session(sid); return {"success":True}
+
+# ─── Memory API ───
+
+@router.get("/memory")
+async def get_memory(ms=Depends(_memory)):
+    if not ms:
+        return {"user": {}, "history": {}, "facts": []}
+    return ms.load()
+
+@router.delete("/memory")
+async def clear_memory(ms=Depends(_memory)):
+    if ms:
+        ms.clear()
+    return {"success": True}

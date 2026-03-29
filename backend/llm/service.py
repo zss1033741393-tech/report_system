@@ -2,6 +2,7 @@
 
 complete_stream yield Dict:
   {"content": "..."} / {"reasoning_content": "..."} / {"error": "..."}
+  {"tool_calls": [{"id":..., "name":..., "arguments": {...}}]}  # 工具调用（在 [DONE] 前一次性 yield）
 
 think_tag_mode:
   "qwen3": is_inside_think 初始 True（推理内容 + </think> + 回答内容）
@@ -68,20 +69,31 @@ class LLMService:
         result = await self.complete_full(messages, config)
         return result["content"]
 
-    async def complete_full(self, messages: list[dict], config: LLMConfig | None = None) -> dict:
-        """非流式，返回 {"content": "...", "reasoning_content": "..."}。"""
-        content_parts, reasoning_parts = [], []
-        async for chunk in self.complete_stream(messages, config):
+    async def complete_full(
+        self,
+        messages: list[dict],
+        config: LLMConfig | None = None,
+        tools: list[dict] | None = None,
+    ) -> dict:
+        """非流式，返回 {"content": "...", "reasoning_content": "...", "tool_calls": [...]}。"""
+        content_parts, reasoning_parts, tool_calls = [], [], []
+        async for chunk in self.complete_stream(messages, config, tools=tools):
             if "content" in chunk:
                 content_parts.append(chunk["content"])
             if "reasoning_content" in chunk:
                 reasoning_parts.append(chunk["reasoning_content"])
+            if "tool_calls" in chunk:
+                tool_calls = chunk["tool_calls"]
             if "error" in chunk:
                 raise RuntimeError(chunk["error"])
         reasoning_text = "".join(reasoning_parts)
         if reasoning_text:
             self._log_reasoning(config, reasoning_parts)
-        return {"content": "".join(content_parts), "reasoning_content": reasoning_text}
+        return {
+            "content": "".join(content_parts),
+            "reasoning_content": reasoning_text,
+            "tool_calls": tool_calls,
+        }
 
     @log_llm_complete_json
     async def complete_json(self, messages: list[dict], config: LLMConfig | None = None) -> dict:
@@ -100,7 +112,10 @@ class LLMService:
 
     @log_llm_stream
     async def complete_stream(
-        self, messages: list[dict], config: LLMConfig | None = None
+        self,
+        messages: list[dict],
+        config: LLMConfig | None = None,
+        tools: list[dict] | None = None,
     ) -> AsyncGenerator[Dict, None]:
         cfg = config or LLMConfig()
         model = cfg.model or self.default_model
@@ -113,8 +128,14 @@ class LLMService:
             "max_tokens": cfg.max_tokens,
             "stream": True,
         }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
         if cfg.extra_payload:
             payload.update(cfg.extra_payload)
+
+        # 工具调用累积缓冲（index → {id, name, arguments_parts}）
+        _tc_buf: dict[int, dict] = {}
 
         timeout = aiohttp.ClientTimeout(
             connect=cfg.timeout_connect or self._timeout_connect,
@@ -170,11 +191,28 @@ class LLMService:
 
                             output = {}
 
-                            # 显式 reasoning_content 字段
+                            # ── 工具调用累积 ──
+                            if tc_list := delta.get("tool_calls"):
+                                for tc in tc_list:
+                                    idx = tc.get("index", 0)
+                                    if idx not in _tc_buf:
+                                        _tc_buf[idx] = {"id": "", "name": "", "arguments": []}
+                                    entry = _tc_buf[idx]
+                                    if tc_id := tc.get("id"):
+                                        entry["id"] = tc_id
+                                    fn = tc.get("function", {})
+                                    if fn_name := fn.get("name"):
+                                        entry["name"] = fn_name
+                                    if fn_args := fn.get("arguments"):
+                                        entry["arguments"].append(fn_args)
+                                # 有 tool_calls 就跳过 content 处理
+                                continue
+
+                            # ── 显式 reasoning_content 字段 ──
                             if reasoning := delta.get("reasoning_content"):
                                 output["reasoning_content"] = reasoning
 
-                            # content 字段
+                            # ── content 字段 ──
                             if content := delta.get("content"):
                                 if not parse_think:
                                     output["content"] = content
@@ -198,6 +236,23 @@ class LLMService:
 
                         except (json.JSONDecodeError, KeyError, IndexError):
                             continue
+
+                # 流式结束：flush 累积的 tool_calls
+                if _tc_buf:
+                    tool_calls = []
+                    for idx in sorted(_tc_buf.keys()):
+                        entry = _tc_buf[idx]
+                        args_str = "".join(entry["arguments"])
+                        try:
+                            args = json.loads(args_str) if args_str else {}
+                        except json.JSONDecodeError:
+                            args = {"_raw": args_str}
+                        tool_calls.append({
+                            "id": entry["id"],
+                            "name": entry["name"],
+                            "arguments": args,
+                        })
+                    yield {"tool_calls": tool_calls}
 
         except Exception as e:
             logger.error(f"LLM stream error: {e}")
