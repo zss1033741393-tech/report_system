@@ -165,8 +165,8 @@ class LeadAgent:
         if self._memory:
             try:
                 memory_block = self._memory.format_for_injection(max_tokens=2000)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Memory 格式化失败，跳过注入: {e}")
 
         system_prompt = self._build_system_prompt(memory_block)
 
@@ -225,8 +225,8 @@ class LeadAgent:
                     outline_md += p.get("content", "")
                 elif t == "report_chunk":
                     report_html += p.get("content", "")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"SSE 事件解析失败（跳过）: {e} raw={sse_str[:100]!r}")
 
         # ─── 保存助手消息 + 产物 metadata ───
         meta: dict = {}
@@ -238,8 +238,8 @@ class LeadAgent:
             meta["report_html"] = report_html
             meta["report_title"] = report_title or "报告"
         if tool_ctx.has_report and not report_html:
-            # 如果工具已更新 has_report 但报告在工具内部产生，从数据库读取
-            pass
+            # 报告由工具内部直接落库，未经 report_chunk SSE 流出
+            logger.warning(f"has_report=True 但 report_html 为空，报告可能由 executor 直接落库 session={session_id}")
 
         await self._ch.add_message(
             session_id, "assistant",
@@ -252,8 +252,8 @@ class LeadAgent:
         if self._memory_updater:
             try:
                 await self._memory_updater.enqueue_update(session_id, user_message, reply_content)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Memory 更新入队失败: {e}")
 
         yield self._ev("done")
 

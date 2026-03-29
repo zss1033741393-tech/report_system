@@ -14,8 +14,14 @@ def _memory():
 
 @router.post("/chat")
 async def chat(req: ChatRequest, agent=Depends(_agent)):
+    import json
     async def stream():
-        async for chunk in agent.handle_message(req.session_id, req.message): yield f"data: {chunk}\n\n"
+        try:
+            async for chunk in agent.handle_message(req.session_id, req.message):
+                yield f"data: {chunk}\n\n"
+        except Exception as e:
+            logger.error(f"chat stream 异常 session={req.session_id}: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control":"no-cache","Connection":"keep-alive","X-Accel-Buffering":"no"})
 
 @router.get("/sessions")
