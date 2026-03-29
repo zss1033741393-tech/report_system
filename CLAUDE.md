@@ -97,7 +97,13 @@ backend/agent/skill_loader.py
 ### Git 规范
 - 开发分支：`claude/add-github-copilot-mcp-zLgYT`
 - 提交信息：中文描述，简明扼要
-- push：`git push -u origin <branch>`（禁止 --force 到 main/master）
+- **push 规则（重要）**：
+  - 必须使用 `git push -u origin <branch>` 通过 PAT URL 直接推送
+  - `origin` remote 已设置为 PAT URL：`https://zss1033741393-tech:<PAT>@github.com/zss1033741393-tech/report_system.git`
+  - **严禁使用 GitHub MCP Server 工具（mcp__github__push_files 等）提交代码**，速度极慢
+  - 如果 `git push origin` 失败，检查 remote URL 是否仍为 PAT URL（`git remote get-url origin`）
+  - 推送后执行 `git fetch origin <branch>:refs/remotes/origin/<branch>` 同步本地跟踪引用，避免 stop-hook 误报
+- 禁止 --force 到 main/master
 
 ## 关键依赖
 
