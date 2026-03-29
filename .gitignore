@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# 运行时数据
+backend/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Memory
+backend/agent/memory/memory.json
+
+# 日志
+*.log
+logs/
+
+# 环境变量
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# 测试覆盖率
+.coverage
+htmlcov/
+.pytest_cache/
+
+# macOS
+.DS_Store
