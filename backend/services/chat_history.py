@@ -25,9 +25,25 @@ CREATE TABLE IF NOT EXISTS llm_traces (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
+CREATE TABLE IF NOT EXISTS tool_call_traces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    trace_id TEXT NOT NULL,
+    step INTEGER NOT NULL,
+    tool_name TEXT NOT NULL,
+    tool_id TEXT,
+    tool_args TEXT,
+    result_summary TEXT,
+    result_data TEXT,
+    success BOOLEAN DEFAULT 1,
+    elapsed_ms REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
 CREATE INDEX IF NOT EXISTS idx_msg_sid ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_trace_session ON llm_traces(session_id);
 CREATE INDEX IF NOT EXISTS idx_trace_type ON llm_traces(llm_type, step_name);
+CREATE INDEX IF NOT EXISTS idx_tool_trace_session ON tool_call_traces(session_id);
 """
 
 class ChatHistoryService:
@@ -126,5 +142,38 @@ class ChatHistoryService:
                 d["request_messages"] = json.loads(d["request_messages"])
             except:
                 pass
+            results.append(d)
+        return results
+
+    async def save_tool_trace(self, session_id: str, trace_id: str, step: int,
+                               tool_name: str, tool_id: str, tool_args: dict,
+                               result_summary: str, result_data: dict,
+                               success: bool, elapsed_ms: float) -> int:
+        """写入一条工具调用轨迹。"""
+        args_json = json.dumps(tool_args, ensure_ascii=False, default=str)
+        data_json = json.dumps(result_data, ensure_ascii=False, default=str) if result_data else None
+        c = await self._db.execute(
+            "INSERT INTO tool_call_traces(session_id,trace_id,step,tool_name,tool_id,"
+            "tool_args,result_summary,result_data,success,elapsed_ms) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (session_id, trace_id, step, tool_name, tool_id,
+             args_json, result_summary, data_json, success, elapsed_ms)
+        )
+        await self._db.commit()
+        return c.lastrowid
+
+    async def get_tool_traces(self, session_id: str) -> list[dict]:
+        """获取某个会话的所有工具调用轨迹。"""
+        c = await self._db.execute(
+            "SELECT id,session_id,trace_id,step,tool_name,tool_id,tool_args,"
+            "result_summary,result_data,success,elapsed_ms,created_at "
+            "FROM tool_call_traces WHERE session_id=? ORDER BY id ASC", (session_id,)
+        )
+        results = []
+        for r in await c.fetchall():
+            d = dict(r)
+            for field in ("tool_args", "result_data"):
+                if d.get(field):
+                    try: d[field] = json.loads(d[field])
+                    except: pass
             results.append(d)
         return results

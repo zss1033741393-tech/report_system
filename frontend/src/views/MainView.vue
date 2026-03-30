@@ -78,7 +78,7 @@ import SkillFactoryProgress from '../components/SkillFactoryProgress.vue'
 import ToolCallBlock from '../components/ToolCallBlock.vue'
 import MemoryPanel from '../components/MemoryPanel.vue'
 import SkillsManager from '../components/SkillsManager.vue'
-import { sendMessage, fetchSessions, deleteSession } from '../utils/sse.js'
+import { sendMessage, fetchSessions, deleteSession, fetchArtifacts } from '../utils/sse.js'
 import { useConversation } from '../composables/useConversation.js'
 
 const conv = useConversation()
@@ -150,11 +150,23 @@ function send(text) {
       if (!outStarted) { conv.updateOutline(null, null); outLoading.value = true; outStarted = true; showRight.value = true; outMdSnap = '' }
       outMdSnap += c
     },
-    onOutlineDone(a) { outLoading.value = false; if (a) conv.anchorInfo.value = a },
+    onOutlineDone(a) {
+      outLoading.value = false
+      if (a) conv.anchorInfo.value = a
+      // 大纲流结束后从 API 拉取 outline JSON，实时更新侧边栏（无需切换会话）
+      fetchArtifacts(sid.value).then(artifacts => {
+        if (artifacts.outline_json) conv.updateOutline(artifacts.outline_json, artifacts.anchor_info || null)
+      }).catch(() => {})
+    },
     onOutlineUpdated(j) {
       if (j) { conv.updateOutline(j, conv.anchorInfo.value); showRight.value = true }
     },
-    onOutlineClipped() {},
+    onOutlineClipped() {
+      // clip 完成后也重新拉取最新 outline
+      fetchArtifacts(sid.value).then(artifacts => {
+        if (artifacts.outline_json) conv.updateOutline(artifacts.outline_json, artifacts.anchor_info || null)
+      }).catch(() => {})
+    },
     onReportChunk(c) {
       if (!reportStarted) {
         conv.updateReport('', '')

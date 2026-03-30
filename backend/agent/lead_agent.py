@@ -42,7 +42,7 @@ BASE_INSTRUCTIONS = """\
 - 用户明确要求生成报告（"生成报告"/"帮我出报告"等）→ execute_data + render_report
 - 用户要求删除/不看某节点 → clip_outline，裁剪完成后询问用户是否重新生成报告
 - 用户修改参数/阈值/过滤条件 → inject_params，注入完成后询问用户是否重新生成报告
-- 用户输入 >80 字看网逻辑 → read_skill_file("skill-factory") 后按六步流程执行
+- 用户输入 >80 字看网逻辑（经验描述）→ 调用 understand_intent(expert_input) 启动设计态，严格按 SKILL.md 指导逐步执行，完成第五步后停止并询问用户
 - 用户说"保存/沉淀/确认保存" → persist_skill（仅此时才调用）
 
 ## 关键约束【严格遵守，不得违反】
@@ -186,6 +186,7 @@ class LeadAgent:
             has_outline=ctx.has_outline,
             has_report=ctx.has_report,
         )
+        tool_ctx._trace_id = trace.trace_id  # 传给 engine 用于 tool_call_traces
 
         # ─── 运行 ReAct 引擎 ───
         reply_content = ""

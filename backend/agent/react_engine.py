@@ -168,10 +168,11 @@ class SimpleReActEngine:
                     # 发送工具调用开始事件
                     yield _ev("tool_call", name=tc_name, args=tc_args)
 
-                    # 执行工具
+                    # 执行工具（记录耗时用于 tool_call_traces）
                     tool_result_summary = ""
                     tool_result_data = {}
                     tool_success = False
+                    t_tool = time.perf_counter()
                     from agent.context import SkillResult
 
                     async for item in self._tools.execute(tool_call, tool_ctx):
@@ -185,6 +186,22 @@ class SimpleReActEngine:
                             # 如果工具执行失败，也告知 LLM
                             if not res.success and res.user_prompt:
                                 yield _ev("chat_reply", content=res.user_prompt)
+
+                    # 工具调用落库（tool_call_traces）
+                    tool_elapsed = (time.perf_counter() - t_tool) * 1000
+                    if hasattr(tool_ctx, "chat_history") and tool_ctx.chat_history and trace_callback:
+                        try:
+                            # 从 trace_callback 的闭包里拿 chat_history
+                            _ch = tool_ctx.chat_history
+                            _tid = getattr(tool_ctx, "_trace_id", session_id)
+                            await _ch.save_tool_trace(
+                                session_id=session_id, trace_id=_tid, step=step,
+                                tool_name=tc_name, tool_id=tc_id, tool_args=tc_args,
+                                result_summary=tool_result_summary, result_data=tool_result_data,
+                                success=tool_success, elapsed_ms=tool_elapsed,
+                            )
+                        except Exception as e:
+                            logger.debug(f"工具轨迹落库失败（可忽略）: {e}")
 
                     # 工具结果注入 ToolMessage
                     tool_result_content = json.dumps(
