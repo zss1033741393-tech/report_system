@@ -61,6 +61,7 @@
           :report-html="reportHtml" :report-title="reportTitle" :report-loading="reportLoading"
           :has-report="hasReport" :has-outline="hasOutline"
           @close="showRight=false" />
+
       </section>
     </transition>
   </div>
@@ -209,6 +210,15 @@ function send(text) {
         created_at: new Date().toISOString(), metadata: Object.keys(meta).length ? meta : null
       })
       streamReply.value = ''; thinkSteps.value = []; designSteps.value = []; conv.clearToolCalls(); scroll(); loadSessions()
+      // 每轮对话结束后同步最新产物（修复 skill-factory 等流程大纲不自动显示的问题）
+      if (sid.value) {
+        fetchArtifacts(sid.value).then(artifacts => {
+          if (artifacts.outline_json) conv.updateOutline(artifacts.outline_json, artifacts.anchor_info || null)
+          if (artifacts.report_html && !conv.report.value?.html) {
+            conv.updateReport(artifacts.report_html, artifacts.report_title || '报告')
+          }
+        }).catch(() => {})
+      }
     }
   })
 }
