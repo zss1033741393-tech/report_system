@@ -79,10 +79,7 @@ class DataExecuteExecutor:
 
     @staticmethod
     def _collect_l5(node, result):
-        level = node.get("level", 0)
-        children = node.get("children", [])
-        # L5 指标节点，或无子节点的 L4 叶子节点（大纲未包含 L5 时的降级处理）
-        if level == 5 or (level == 4 and not children):
+        if node.get("level") == 5:
             result.append(node)
-        for child in children:
+        for child in node.get("children", []):
             DataExecuteExecutor._collect_l5(child, result)

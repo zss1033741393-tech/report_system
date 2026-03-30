@@ -19,10 +19,7 @@ class DataBinding(SubSkillBase):
 def _collect_l5_bindings(node: dict, bindings: list):
     if not node:
         return
-    level = node.get("level", 0)
-    children = node.get("children", [])
-    # L5 指标节点，或无子节点的 L4 叶子节点（大纲未包含 L5 时的降级处理）
-    if level == 5 or (level == 4 and not children):
+    if node.get("level") == 5:
         bindings.append({
             "node_id": node.get("id", ""),
             "node_name": node.get("name", ""),
@@ -30,5 +27,5 @@ def _collect_l5_bindings(node: dict, bindings: list):
             "mock_config": {"data_type": "TABLE", "params": {}},
             "sql_config": None, "api_config": None,
         })
-    for child in children:
+    for child in node.get("children", []):
         _collect_l5_bindings(child, bindings)

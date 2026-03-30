@@ -138,8 +138,7 @@ def _one_section(item, num, dr):
     for ind in item.get("children", []):
         if ind.get("level") == 5:
             sec["indicators"].append({"name": ind.get("name",""), "data": dr.get(ind.get("name",""))})
-    # 叶子节点自身作为指标：L5 叶子，或无 L5 子节点的 L4 叶子（降级处理）
-    if not item.get("children") and item.get("level") in (4, 5):
+    if not item.get("children") and item.get("level") == 5:
         sec["indicators"].append({"name": item.get("name",""), "data": dr.get(item.get("name",""))})
     return sec
 

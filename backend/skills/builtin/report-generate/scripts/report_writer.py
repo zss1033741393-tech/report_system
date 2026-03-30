@@ -196,21 +196,23 @@ class ReportWriterExecutor:
         }
         sec_num = 0
         for child in dim_node.get("children", []):
-            level = child.get("level", 0)
-            if level == 4:
+            if child.get("level") == 4:
                 sec_num += 1
-                chapter["sections"].append(
-                    self._build_one_section(child, sec_num, kb_data, data_results))
-            elif level == 5:
-                # L5 直接挂在 L3 下（跳过了 L4），当作独立小节处理
-                sec_num += 1
-                ind_data = data_results.get(child.get("name", ""))
-                chapter["sections"].append({
+                item_kb = kb_data.get(child.get("id", ""), {})
+                section = {
                     "number": sec_num,
                     "name": child.get("name", ""),
-                    "description": "",
-                    "indicators": [{"name": child.get("name", ""), "data": ind_data}],
-                })
+                    "description": item_kb.get("chapter_template", "") or item_kb.get("description", ""),
+                    "indicators": [],
+                }
+                for ind in child.get("children", []):
+                    if ind.get("level") == 5:
+                        ind_data = data_results.get(ind.get("name", ""))
+                        section["indicators"].append({
+                            "name": ind.get("name", ""),
+                            "data": ind_data,
+                        })
+                chapter["sections"].append(section)
         return chapter
 
     def _build_one_section(self, item_node, sec_num, kb_data, data_results):
@@ -222,15 +224,10 @@ class ReportWriterExecutor:
             "description": item_kb.get("chapter_template", "") or item_kb.get("description", ""),
             "indicators": [],
         }
-        children = item_node.get("children", [])
-        for ind in children:
+        for ind in item_node.get("children", []):
             if ind.get("level") == 5:
                 ind_data = data_results.get(ind.get("name", ""))
                 section["indicators"].append({"name": ind.get("name", ""), "data": ind_data})
-        # L4 叶子节点（无 L5 子节点）自身作为指标（降级处理）
-        if not children:
-            ind_data = data_results.get(item_node.get("name", ""))
-            section["indicators"].append({"name": item_node.get("name", ""), "data": ind_data})
         return section
 
     def _load_template(self):
