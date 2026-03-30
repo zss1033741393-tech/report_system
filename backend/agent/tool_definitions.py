@@ -306,33 +306,52 @@ async def _run_skill_factory_step(
 
 
 async def _understand_intent(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
+    """启动完整设计态流程（preview_only：步骤1-5）。完成后系统发送沉淀确认提示，等待用户决策。"""
     expert_input = args.get("expert_input", "")
     if not expert_input:
         yield {"result": SkillResult(False, "缺少 expert_input 参数")}
         return
-    # 使用 skill-factory preview_only 模式中的第一步：通过存储 expert_input 到 Redis 并以 step 1 执行
-    async for item in _run_skill_factory_step("understand_intent", args, tool_ctx):
-        yield item
 
+    executor = tool_ctx.loader.get_executor("skill-factory")
+    if not executor:
+        logger.error("understand_intent: skill-factory 执行器未加载")
+        yield {"result": SkillResult(False, "skill-factory 执行器未加载")}
+        return
+
+    logger.info(f"understand_intent: 启动 preview_only 流程 session={tool_ctx.session_id}")
+    skill_ctx = SkillContext(
+        session_id=tool_ctx.session_id,
+        user_message=expert_input,
+        params={"mode": "preview_only", "expert_input": expert_input},
+        current_outline=tool_ctx.current_outline,
+        trace_callback=tool_ctx.trace_callback,
+    )
+    result = None
+    async for item in executor.execute(skill_ctx):
+        if isinstance(item, SkillResult):
+            result = item
+        elif isinstance(item, str):
+            yield {"sse": item}
+
+    final = result or SkillResult(False, "设计态流程失败")
+    logger.info(f"understand_intent: 完成 success={final.success}")
+    yield {"result": final}
+
+
+# ── 以下分步工具在 executor 中无法单独执行（_single_step 参数从未在 executor 实现），
+#    已整合到 understand_intent(preview_only) 中。保留空壳避免 LLM 误调时报硬错误。
 
 async def _extract_structure(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
-    async for item in _run_skill_factory_step("extract_structure", args, tool_ctx):
-        yield item
-
+    yield {"result": SkillResult(False, "此步骤已整合到 understand_intent，请勿单独调用")}
 
 async def _design_outline(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
-    async for item in _run_skill_factory_step("design_outline", args, tool_ctx):
-        yield item
-
+    yield {"result": SkillResult(False, "此步骤已整合到 understand_intent，请勿单独调用")}
 
 async def _bind_data(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
-    async for item in _run_skill_factory_step("bind_data", args, tool_ctx):
-        yield item
-
+    yield {"result": SkillResult(False, "此步骤已整合到 understand_intent，请勿单独调用")}
 
 async def _preview_report(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
-    async for item in _run_skill_factory_step("preview_report", args, tool_ctx):
-        yield item
+    yield {"result": SkillResult(False, "此步骤已整合到 understand_intent，请勿单独调用")}
 
 
 async def _persist_skill(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
@@ -493,79 +512,19 @@ def register_all_tools(registry: ToolRegistry):
     registry.register(
         name="understand_intent",
         description=(
-            "理解专家看网逻辑文本，提取场景简介、触发关键词、用户问法变体、技能名称。"
-            "用户输入 >80 字看网逻辑时，这是设计态六步流程的第一步。"
+            "执行完整看网能力设计流程（五步：意图理解→结构提取→大纲设计→数据绑定→报告预览）。"
+            "用户输入超过 80 字的看网逻辑描述时调用此工具。"
+            "流程完成后系统自动向用户发送沉淀确认提示，等待用户决定是否保存为可复用能力。"
+            "【重要】此工具调用完成后，不得再调用 persist_skill，必须等待用户明确回复。"
         ),
         parameters={
             "type": "object",
             "properties": {
-                "expert_input": {"type": "string", "description": "专家输入的看网逻辑文本"},
+                "expert_input": {"type": "string", "description": "专家输入的看网逻辑文本（完整原文）"},
             },
             "required": ["expert_input"],
         },
         fn=_understand_intent,
-    )
-
-    registry.register(
-        name="extract_structure",
-        description=(
-            "将看网逻辑格式化为结构化 Markdown，映射五层知识架构（评估对象→维度→子维度→指标→数据）。"
-            "在 understand_intent 后调用。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "expert_input": {"type": "string", "description": "专家输入的看网逻辑原文"},
-            },
-            "required": ["expert_input"],
-        },
-        fn=_extract_structure,
-    )
-
-    registry.register(
-        name="design_outline",
-        description=(
-            "基于结构化文本生成可执行大纲 JSON（五层架构）。在 extract_structure 后调用。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "expert_input": {"type": "string", "description": "专家输入的看网逻辑原文"},
-            },
-            "required": ["expert_input"],
-        },
-        fn=_design_outline,
-    )
-
-    registry.register(
-        name="bind_data",
-        description=(
-            "为大纲底层评估指标绑定数据源（SQL/API/Mock）。在 design_outline 后调用。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "expert_input": {"type": "string", "description": "专家输入的看网逻辑原文（用于上下文）"},
-            },
-            "required": ["expert_input"],
-        },
-        fn=_bind_data,
-    )
-
-    registry.register(
-        name="preview_report",
-        description=(
-            "生成预览版报告 HTML。在 bind_data 后调用，向用户展示看网能力效果。"
-            "预览完成后询问用户是否保存为可复用能力。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "expert_input": {"type": "string", "description": "专家输入的看网逻辑原文（用于上下文）"},
-            },
-            "required": ["expert_input"],
-        },
-        fn=_preview_report,
     )
 
     registry.register(

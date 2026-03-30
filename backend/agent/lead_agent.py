@@ -42,13 +42,13 @@ BASE_INSTRUCTIONS = """\
 - 用户明确要求生成报告（"生成报告"/"帮我出报告"等）→ execute_data + render_report
 - 用户要求删除/不看某节点 → clip_outline，裁剪完成后询问用户是否重新生成报告
 - 用户修改参数/阈值/过滤条件 → inject_params，注入完成后询问用户是否重新生成报告
-- 用户输入 >80 字看网逻辑（经验描述）→ 调用 understand_intent(expert_input) 启动设计态，严格按 SKILL.md 指导逐步执行，完成第五步后停止并询问用户
+- 用户输入超过 80 字的看网逻辑文本（描述分析经验/规则）→ 调用 understand_intent(expert_input)，调用完成后停止等待用户指示
 - 用户说"保存/沉淀/确认保存" → persist_skill（仅此时才调用）
 
 ## 关键约束【严格遵守，不得违反】
 - 【禁止】search_skill 完成后自动调用 execute_data/render_report，必须先询问用户
 - 【禁止】clip_outline 或 inject_params 完成后自动调用 execute_data/render_report，必须先询问用户
-- 【禁止】skill-factory 五步完成后自动调用 persist_skill，预览完成后必须询问用户是否保存
+- 【禁止】understand_intent 完成后自动调用 persist_skill，必须等用户明确说"保存"
 - 生成报告必须先执行 execute_data，再执行 render_report（此顺序不可颠倒）
 - persist_skill 必须等用户明确说"保存/沉淀/确认保存"后才调用，绝不主动触发
 """
