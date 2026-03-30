@@ -68,6 +68,31 @@ class OutlineDesign(SubSkillBase):
             for n in ancestor_paths:
                 all_nodes[n["id"]] = n
 
+        # 如果 all_nodes 中没有 L2 节点，通过 L3 根节点的祖先链补充 L2 父节点
+        # 否则 LLM 会因无 L2 可选而幻觉出 L2_Report_Root 等无效 ID
+        has_l2 = any(n.get("level") == 2 for n in all_nodes.values())
+        if not has_l2 and subtree_roots:
+            l2_collected: dict = {}  # l2_id → node_info
+            l2_to_l3: dict = {}     # l2_id → [l3_id, ...]
+            for l3_id in subtree_roots:
+                if l3_id not in all_nodes:
+                    continue
+                try:
+                    anc_chain = await self._svc.neo4j.get_ancestor_chain(l3_id)
+                    for a in anc_chain:
+                        if a["level"] == 2:
+                            l2_id = a["id"]
+                            l2_collected[l2_id] = {"id": l2_id, "name": a["name"], "level": 2}
+                            l2_to_l3.setdefault(l2_id, []).append(l3_id)
+                except Exception as e:
+                    logger.warning(f"获取 L2 祖先节点失败 ({l3_id}): {e}")
+            for l2_id, l2_node in l2_collected.items():
+                all_nodes[l2_id] = l2_node
+                children_map[l2_id] = [
+                    {"id": cid, "name": all_nodes[cid]["name"], "level": all_nodes[cid]["level"]}
+                    for cid in l2_to_l3.get(l2_id, []) if cid in all_nodes
+                ]
+
         # 构建 ID→节点 映射表（供后处理使用）
         id_map = {n["id"]: n for n in all_nodes.values()}
 
@@ -112,7 +137,7 @@ class OutlineDesign(SubSkillBase):
 
         # 3. 后处理：用 ID 反查 name/level，构建完整的 outline_json
         phantom_ids = []
-        fc.outline_json = _hydrate_outline(raw_outline, id_map, phantom_ids, fc.skill_name)
+        fc.outline_json = _hydrate_outline(raw_outline, id_map, phantom_ids, fc.skill_name, is_root=True)
 
         # 后处理：LLM 有时只输出到 L4 而忘记 L5，自动从 KB 补全缺失的 L5 子节点
         _fill_missing_l5(fc.outline_json, children_map)
@@ -132,7 +157,7 @@ class OutlineDesign(SubSkillBase):
                          ensure_ascii=False)
 
 
-def _hydrate_outline(raw: dict, id_map: dict, phantom: list, default_name: str = "") -> dict:
+def _hydrate_outline(raw: dict, id_map: dict, phantom: list, default_name: str = "", is_root: bool = False) -> dict:
     """将 LLM 输出的 ID 树形结构反查为完整的 {id, name, level, children} 树。"""
     nid = raw.get("id", "")
     node_info = id_map.get(nid)
@@ -142,6 +167,10 @@ def _hydrate_outline(raw: dict, id_map: dict, phantom: list, default_name: str =
     elif not nid:
         # 根节点可能没有 ID（LLM 自定义）
         result = {"name": raw.get("name", default_name), "level": raw.get("level", 2), "children": []}
+    elif is_root:
+        # 根节点 ID 不在知识库中（如 LLM 幻觉的 L2_Report_Root），创建合成根节点避免崩溃
+        phantom.append(nid)
+        result = {"name": default_name, "level": 2, "children": []}
     else:
         phantom.append(nid)
         return None
