@@ -71,11 +71,9 @@ class OutlineDesign(SubSkillBase):
         # 构建 ID→节点 映射表（供后处理使用）
         id_map = {n["id"]: n for n in all_nodes.values()}
 
-        # 知识库清单格式：ID 在前，方便 LLM 输出时直接引用
-        kb_node_list = "\n".join(
-            f"{n['id']} | L{n['level']} | {n['name']}"
-            for n in sorted(all_nodes.values(), key=lambda x: (x.get("level", 0), x.get("name", "")))
-        )
+        # 知识库清单：树形格式，明确展示父子层级关系
+        # 平铺列表会让 LLM 不知道 L5 归属哪个 L4，导致只生成到 L4 就停
+        kb_node_list = _render_kb_tree(all_nodes, children_map)
 
         # 2. LLM 生成大纲——输出 ID 而非名字
         prompt = f"""你是报告大纲设计专家。基于用户看网逻辑和知识库节点组织大纲。
@@ -92,8 +90,10 @@ class OutlineDesign(SubSkillBase):
 ## Step 2 匹配的核心维度（优先使用）
 {json.dumps([h.get("name","") for h in fc.dimension_hints], ensure_ascii=False) if fc.dimension_hints else "无"}
 
-## 知识库节点清单（格式：ID | 层级 | 名称）
+## 知识库节点清单（树形结构，缩进表示父子关系；格式：ID | 层级 | 名称）
 {kb_node_list}
+
+注意：选 L4 节点时，必须同步选取其下的 L5 子节点（已在树中列出）。
 
 ## 输出格式（用节点 ID 标识，不输出名字）
 ```json
@@ -152,6 +152,41 @@ def _hydrate_outline(raw: dict, id_map: dict, phantom: list, default_name: str =
             result["children"].append(child)
 
     return result
+
+
+def _render_kb_tree(all_nodes: dict, children_map: dict) -> str:
+    """将知识库节点以树形格式渲染，让 LLM 清楚看到 L4→L5 亲子关系。
+
+    输出示例：
+      Dimension_2 | L3 | 传送网络覆盖分析
+        EvalItem_8 | L4 | 传送站点覆盖企业分析
+          Indicator_10 | L5 | OTN站点覆盖企业数量
+          Indicator_12 | L5 | OTN站点未覆盖企业行政区域分布
+    """
+    # 找出根节点：不出现在任何节点的 children 列表里
+    all_child_ids: set = set()
+    for children in children_map.values():
+        for c in children:
+            all_child_ids.add(c["id"])
+    root_ids = [nid for nid in all_nodes if nid not in all_child_ids]
+    root_ids.sort(key=lambda x: all_nodes[x].get("level", 0))
+
+    lines: list[str] = []
+
+    def _render(nid: str, indent: int) -> None:
+        node = all_nodes.get(nid)
+        if not node:
+            return
+        lines.append("  " * indent + f"{nid} | L{node.get('level', 0)} | {node.get('name', '')}")
+        for child in children_map.get(nid, []):
+            _render(child["id"], indent + 1)
+
+    for rid in root_ids:
+        _render(rid, 0)
+    return "\n".join(lines) if lines else "\n".join(
+        f"{n['id']} | L{n['level']} | {n['name']}"
+        for n in sorted(all_nodes.values(), key=lambda x: (x.get("level", 0), x.get("name", "")))
+    )
 
 
 def _build_children_map(node: dict, cmap: dict) -> None:

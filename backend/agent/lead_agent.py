@@ -143,21 +143,22 @@ class LeadAgent:
 
     async def handle_message(self, session_id: str, user_message: str) -> AsyncGenerator[str, None]:
         await self._ch.ensure_session(session_id)
-        await self._ch.add_message(session_id, "user", user_message)
         trace = TraceLogger(session_id=session_id)
         trace.log("request.start", data={"user_message": user_message})
+        trace_cb = self._make_trace_callback(session_id, trace.trace_id)
+
+        # ─── 中间件链：先填充上下文（此时用户消息尚未入库，避免 HistoryMiddleware 重复加载）───
+        ctx = AgentContext(session_id=session_id, user_message=user_message, trace_id=trace.trace_id)
+        ctx = await self._mw.run_before(ctx)
+
+        # 中间件之后再入库，确保 chat_history 不含当前轮用户消息（react_engine 会单独追加）
+        await self._ch.add_message(session_id, "user", user_message)
 
         # 设置会话标题（首条消息）
         msgs = await self._ch.get_messages(session_id, limit=2)
         if len(msgs) <= 1:
             title = user_message[:20] + ("..." if len(user_message) > 20 else "")
             await self._ch.update_session_title(session_id, title)
-
-        trace_cb = self._make_trace_callback(session_id, trace.trace_id)
-
-        # ─── 中间件链：填充上下文 ───
-        ctx = AgentContext(session_id=session_id, user_message=user_message, trace_id=trace.trace_id)
-        ctx = await self._mw.run_before(ctx)
 
         # ─── 检查 L5 待确认 ───
         if ctx.has_pending_confirm and ctx.pending_confirm_options:
