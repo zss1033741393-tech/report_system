@@ -163,15 +163,8 @@ class LeadAgent:
                 yield self._ev("done")
                 return
 
-        # ─── 构建 Memory 块 ───
-        memory_block = ""
-        if self._memory:
-            try:
-                memory_block = self._memory.format_for_injection(max_tokens=2000)
-            except Exception as e:
-                logger.warning(f"Memory 格式化失败，跳过注入: {e}")
-
-        system_prompt = self._build_system_prompt(memory_block)
+        # Memory 注入已禁用：跨会话污染风险高于收益，保留代码结构便于日后重新启用
+        system_prompt = self._build_system_prompt("")
 
         # ─── 构建 ToolContext ───
         tool_ctx = ToolContext(
@@ -257,12 +250,9 @@ class LeadAgent:
             metadata=meta if meta else None,
         )
 
-        # ─── Memory 异步更新 ───
-        if self._memory_updater:
-            try:
-                await self._memory_updater.enqueue_update(session_id, user_message, reply_content)
-            except Exception as e:
-                logger.warning(f"Memory 更新入队失败: {e}")
+        # Memory 异步更新已禁用（与注入同步关闭）
+        # if self._memory_updater:
+        #     await self._memory_updater.enqueue_update(session_id, user_message, reply_content)
 
         yield self._ev("done")
 

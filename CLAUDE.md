@@ -51,7 +51,6 @@ report_system/
 ### 技能（Skill）规范
 - 每个技能目录必须含 `SKILL.md`（YAML frontmatter + 工作流正文）
 - Executor 放在 `scripts/` 子目录，实现 `async def execute(ctx) -> AsyncGenerator`
-- **严禁修改**：`skills/builtin/*/scripts/*.py`（Executor 实现不属于重构范围）
 - SKILL.md body 是 LLM 可读的工作流指导，供 `read_skill_file` 工具读取
 
 ### 工具（Tool）规范

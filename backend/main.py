@@ -137,7 +137,7 @@ async def lifespan(app: FastAPI):
         "skill_registry": registry,
     })
 
-    memory_updater.start()
+    # memory_updater.start()  # 已禁用：跨会话污染，业务场景不适合持续更新
     logger.info("========== 初始化完成 ==========")
     yield
 
