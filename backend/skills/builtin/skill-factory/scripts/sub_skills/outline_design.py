@@ -58,10 +58,12 @@ class OutlineDesign(SubSkillBase):
                     subtree_roots.add(n["id"])
 
         all_nodes = {}
+        children_map: dict = {}  # parent_id → [{id, name, level}, ...]
         for root_id in subtree_roots:
             subtree = await self._svc.neo4j.get_subtree(root_id)
             if subtree:
                 _flatten_tree(subtree, all_nodes)
+                _build_children_map(subtree, children_map)
         if not all_nodes and ancestor_paths:
             for n in ancestor_paths:
                 all_nodes[n["id"]] = n
@@ -112,6 +114,9 @@ class OutlineDesign(SubSkillBase):
         phantom_ids = []
         fc.outline_json = _hydrate_outline(raw_outline, id_map, phantom_ids, fc.skill_name)
 
+        # 后处理：LLM 有时只输出到 L4 而忘记 L5，自动从 KB 补全缺失的 L5 子节点
+        _fill_missing_l5(fc.outline_json, children_map)
+
         if phantom_ids:
             logger.warning(f"Step 3 后验校验：移除无效 ID: {phantom_ids}")
             yield sse_event("kb_validation", {
@@ -147,6 +152,37 @@ def _hydrate_outline(raw: dict, id_map: dict, phantom: list, default_name: str =
             result["children"].append(child)
 
     return result
+
+
+def _build_children_map(node: dict, cmap: dict) -> None:
+    """递归构建 parent_id → [child_info, ...] 映射，保留 KB 真实亲子关系。"""
+    nid = node.get("id", "")
+    if nid and nid not in cmap:
+        cmap[nid] = [
+            {"id": c.get("id", ""), "name": c.get("name", ""), "level": c.get("level", 0)}
+            for c in node.get("children", [])
+        ]
+    for child in node.get("children", []):
+        _build_children_map(child, cmap)
+
+
+def _fill_missing_l5(node: dict, children_map: dict) -> None:
+    """后处理：LLM 未为 L4 节点生成 L5 子节点时，从 KB 亲子关系自动补全。
+    这处理 LLM 只输出到 L4 层就停止的情况（报告 sections 有标题但无数据）。
+    """
+    if not node:
+        return
+    if node.get("level") == 4 and not node.get("children"):
+        nid = node.get("id", "")
+        for child in children_map.get(nid, []):
+            if child.get("level") == 5:
+                node.setdefault("children", []).append({
+                    "id": child["id"], "name": child["name"], "level": 5, "children": [],
+                })
+        if node.get("children"):
+            logger.debug(f"auto-filled L5 for L4={node.get('name','')}: {[c['name'] for c in node['children']]}")
+    for child in node.get("children", []):
+        _fill_missing_l5(child, children_map)
 
 
 def outline_to_md(outline: dict, depth: int = 0, numbering: str = "") -> str:

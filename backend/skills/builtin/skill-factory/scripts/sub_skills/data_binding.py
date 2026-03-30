@@ -24,7 +24,7 @@ def _collect_l5_bindings(node: dict, bindings: list):
             "node_id": node.get("id", ""),
             "node_name": node.get("name", ""),
             "binding_type": "mock",
-            "mock_config": {"data_type": "TABLE", "params": {}},
+            "mock_config": {"data_type": "", "params": {}},  # 留空让 MockDataService 查 MOCK_DATA_REGISTRY
             "sql_config": None, "api_config": None,
         })
     for child in node.get("children", []):
