@@ -12,7 +12,6 @@ class OutlineRenderer:
         yield f"# {self.get_outline_title(subtree)}\n\n"
         children = subtree.get("children", [])
         if not children:
-            if subtree.get("intro_text"): yield f"{subtree['intro_text']}\n\n"
             return
         async for c in self._children(children, 1, ""): yield c
 
@@ -25,8 +24,6 @@ class OutlineRenderer:
         if node.get("level",0) == 5: return
         prefix = "#" * min(depth+1, 6)
         yield f"{prefix} {num}. {node.get('name','')}\n\n"
-        if node.get("level",0) == 3 and node.get("intro_text"):
-            yield f"{node['intro_text']}\n\n"
         children = node.get("children", [])
         if children:
             async for c in self._children(children, depth+1, f"{num}."): yield c
