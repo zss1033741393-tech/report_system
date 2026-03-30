@@ -28,6 +28,7 @@ def _load(scenario: str) -> LLMConfig:
 
 
 # 场景配置（从 YAML 加载）
+REACT_AGENT_CONFIG = _load("react_agent")
 PLANNER_CONFIG = _load("planner")
 REFLECTOR_CONFIG = _load("reflector")
 ANCHOR_SELECT_CONFIG = _load("anchor_select")

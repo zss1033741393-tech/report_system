@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # ─── Skill 匹配（运行态） ───
     SKILL_MATCH_THRESHOLD: float = 0.7
 
+    # ─── ReAct 引擎 ───
+    REACT_MAX_STEPS: int = 15
+
     # ─── 报告 ───
     REPORT_TEMPLATE_DIR: str = "./templates/report"
 

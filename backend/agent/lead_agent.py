@@ -38,16 +38,19 @@ BASE_INSTRUCTIONS = """\
 3. 复杂任务前先调用 read_skill_file 阅读对应技能的工作流指导
 
 ## 意图识别规则
-- 用户询问网络分析/评估 → search_skill(query)
-- 用户要求删除/不看某节点 → clip_outline + execute_data + render_report
-- 用户修改参数/阈值/过滤条件 → inject_params + execute_data + render_report
+- 用户询问网络分析/评估 → search_skill(query)，完成后向用户展示大纲并询问是否生成报告
+- 用户明确要求生成报告（"生成报告"/"帮我出报告"等）→ execute_data + render_report
+- 用户要求删除/不看某节点 → clip_outline，裁剪完成后询问用户是否重新生成报告
+- 用户修改参数/阈值/过滤条件 → inject_params，注入完成后询问用户是否重新生成报告
 - 用户输入 >80 字看网逻辑 → read_skill_file("skill-factory") 后按六步流程执行
-- 用户说"保存/沉淀" → persist_skill（仅在明确确认后调用）
+- 用户说"保存/沉淀/确认保存" → persist_skill（仅此时才调用）
 
-## 关键约束
-- 生成报告必须先执行 execute_data，再执行 render_report
-- 裁剪或参数注入后如已有报告，必须重新 execute_data + render_report
-- persist_skill 必须等用户明确确认才调用
+## 关键约束【严格遵守，不得违反】
+- 【禁止】search_skill 完成后自动调用 execute_data/render_report，必须先询问用户
+- 【禁止】clip_outline 或 inject_params 完成后自动调用 execute_data/render_report，必须先询问用户
+- 【禁止】skill-factory 五步完成后自动调用 persist_skill，预览完成后必须询问用户是否保存
+- 生成报告必须先执行 execute_data，再执行 render_report（此顺序不可颠倒）
+- persist_skill 必须等用户明确说"保存/沉淀/确认保存"后才调用，绝不主动触发
 """
 
 # ─── Skill System Prompt 段落（由 SkillRegistry 生成）───
@@ -190,6 +193,7 @@ class LeadAgent:
         report_html = ""
         report_title = ""
         outline_md = ""
+        _outline_building = False  # 追踪是否在新一轮大纲流中
 
         async for sse_str in self._engine.run(
             session_id=session_id,
@@ -218,10 +222,14 @@ class LeadAgent:
                     else:
                         collected_thinking.append(e)
                 elif t == "outline_done":
-                    pass  # outline 已在工具内部持久化
+                    _outline_building = False  # 本轮大纲流结束
                 elif t == "report_done":
                     report_title = p.get("title", "报告")
                 elif t == "outline_chunk":
+                    if not _outline_building:
+                        # 新一轮大纲流开始（clip/search 产生新大纲），清空旧内容
+                        outline_md = ""
+                        _outline_building = True
                     outline_md += p.get("content", "")
                 elif t == "report_chunk":
                     report_html += p.get("content", "")

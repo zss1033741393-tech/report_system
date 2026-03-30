@@ -93,3 +93,8 @@ scenarios:
     model: "qwen3.5-27b"
     temperature: 0.6
     max_tokens: 32768
+
+  react_agent:
+    model: "qwen3.5-27b"
+    temperature: 0.2
+    max_tokens: 4096

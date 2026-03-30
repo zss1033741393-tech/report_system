@@ -26,13 +26,14 @@ from typing import AsyncGenerator, Optional
 from agent.context_compressor import compress, should_compress
 from agent.loop_detector import LoopDetector
 from agent.tool_registry import ToolContext, ToolRegistry
-from llm.config import LLMConfig
+from config import settings
+from llm.config import LLMConfig, REACT_AGENT_CONFIG
 from llm.service import LLMService
 
 logger = logging.getLogger(__name__)
 
-MAX_STEPS = 15
-_REACT_CONFIG = LLMConfig(temperature=0.2, max_tokens=4096, stream=True)
+MAX_STEPS: int = settings.REACT_MAX_STEPS
+_REACT_CONFIG: LLMConfig = REACT_AGENT_CONFIG
 
 
 def _ev(t: str, **kw) -> str:
