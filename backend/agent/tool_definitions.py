@@ -335,6 +335,20 @@ async def _understand_intent(args: dict, tool_ctx: ToolContext) -> AsyncGenerato
 
     final = result or SkillResult(False, "设计态流程失败")
     logger.info(f"understand_intent: 完成 success={final.success}")
+
+    # 将 skill-factory 生成的大纲持久化到会话，使后续 clip/status 能正确识别
+    if final.success and final.data.get("outline_json"):
+        try:
+            await tool_ctx.chat_history.save_outline_state(
+                tool_ctx.session_id,
+                final.data["outline_json"],
+            )
+            tool_ctx.has_outline = True
+            tool_ctx.current_outline = final.data["outline_json"]
+            logger.info(f"understand_intent: 大纲已持久化到会话 session={tool_ctx.session_id}")
+        except Exception as e:
+            logger.warning(f"understand_intent: 大纲持久化失败（可忽略）: {e}")
+
     yield {"result": final}
 
 
