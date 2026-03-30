@@ -37,11 +37,11 @@ def log_llm_complete_json(func):
 def log_llm_stream(func):
     """装饰 complete_stream（yield Dict 的流式接口）。"""
     @functools.wraps(func)
-    async def wrapper(self, msgs, cfg=None) -> AsyncGenerator[Dict, None]:
+    async def wrapper(self, msgs, cfg=None, **kwargs) -> AsyncGenerator[Dict, None]:
         t0 = time.perf_counter()
         content_parts, reasoning_parts, err = [], [], None
         try:
-            async for chunk in func(self, msgs, cfg):
+            async for chunk in func(self, msgs, cfg, **kwargs):
                 # 收集用于日志记录
                 if isinstance(chunk, dict):
                     if "content" in chunk:
