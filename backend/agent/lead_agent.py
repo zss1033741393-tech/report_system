@@ -162,12 +162,17 @@ class LeadAgent:
 
         # ─── 检查 L5 待确认 ───
         if ctx.has_pending_confirm and ctx.pending_confirm_options:
-            # 判断用户是否在回答确认（A/B/C 或选择描述）
-            if self._is_confirm_reply(user_message):
+            if not self._is_new_task(user_message):
+                # 非新任务指令：尝试匹配确认选项（名称匹配 / A/B/C）
                 async for ev in self._confirm(ctx, user_message, trace_cb):
                     yield ev
-                yield self._ev("done")
-                return
+                # _confirm 成功时已删除 pending；若 pending 还在，说明匹配失败
+                remaining = await self._ss.get_pending_confirm(ctx.session_id)
+                if not remaining:
+                    yield self._ev("done")
+                    return
+            # 新任务指令 或 确认匹配失败：清理 pending，继续正常 ReAct 流程
+            await self._ss.delete_pending_confirm(ctx.session_id)
 
         # Memory 注入已禁用：跨会话污染风险高于收益，保留代码结构便于日后重新启用
         system_prompt = self._build_system_prompt("")
@@ -262,12 +267,10 @@ class LeadAgent:
 
         yield self._ev("done")
 
-    def _is_confirm_reply(self, message: str) -> bool:
-        """判断用户回复是否是 L5 层级确认。"""
-        msg = message.strip().upper()
-        return msg in ("A", "B", "C") or any(
-            kw in message for kw in ["选择", "选A", "选B", "选C", "第一", "第二", "第三"]
-        )
+    def _is_new_task(self, message: str) -> bool:
+        """判断用户消息是否为新任务指令（而非 L5 确认回复）。"""
+        new_task_kws = ["帮我分析", "帮我看", "帮我评估", "生成报告", "删除", "保存", "沉淀", "阈值改为"]
+        return any(kw in message for kw in new_task_kws)
 
     async def _confirm(self, ctx: AgentContext, user_message: str, trace_cb=None) -> AsyncGenerator[str, None]:
         """处理 L5 层级确认。"""
@@ -290,7 +293,7 @@ class LeadAgent:
                     node_id = o.get("id")
                     break
         if not node_id:
-            yield self._ev("chat_reply", content="未识别您的选择，请回复 A、B 或 C。")
+            # 匹配失败，不产生输出，由调用方检测 pending 仍存在后清理并继续 ReAct
             return
 
         await self._ss.delete_pending_confirm(ctx.session_id)

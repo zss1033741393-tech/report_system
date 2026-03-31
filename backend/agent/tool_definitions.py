@@ -115,15 +115,28 @@ async def _search_skill(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dic
         if isinstance(item, SkillResult):
             result = item
             if result.success:
-                tool_ctx.current_outline = result.data.get("subtree")
-                tool_ctx.has_outline = True
-                # 持久化大纲状态
-                if result.data.get("subtree") and result.data.get("anchor"):
-                    await tool_ctx.chat_history.save_outline_state(
-                        tool_ctx.session_id,
-                        result.data["subtree"],
-                        result.data.get("anchor"),
-                    )
+                subtree = result.data.get("subtree")
+                if subtree:
+                    # 正常大纲生成完成，更新工具上下文并持久化
+                    tool_ctx.current_outline = subtree
+                    tool_ctx.has_outline = True
+                    anchor = result.data.get("anchor")
+                    if anchor:
+                        await tool_ctx.chat_history.save_outline_state(
+                            tool_ctx.session_id,
+                            subtree,
+                            anchor,
+                        )
+                # else: L5 确认场景，subtree 为 None，不标记 has_outline
+
+                # L5 确认场景：额外发送 confirm_required SSE 事件触发前端对话框
+                if result.data.get("type") == "confirm_required":
+                    yield {"sse": json.dumps({
+                        "type": "confirm_required",
+                        "indicator_name": result.data.get("indicator_name", ""),
+                        "full_path": result.data.get("full_path", ""),
+                        "ancestors": result.data.get("ancestors", []),
+                    }, ensure_ascii=False)}
         elif isinstance(item, str):
             yield {"sse": item}
 

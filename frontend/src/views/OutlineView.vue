@@ -107,7 +107,16 @@ function rJson(tree,d=0){
   } else if(tree.level===5){
     md+=`- **${tree.name}**`
     const para=tree.paragraph
-    if(para?.content){const preview=para.content.replace(/\{(\w+)\}/g,'[$1]');md+=`：${preview}`}
+    if(para?.content){
+      const params=para.params||{}
+      const preview=para.content.replace(/\{(\w+)\}/g,(match,key)=>{
+        const val=params[key]
+        if(val==null) return `[${key}]`
+        if(typeof val==='object'&&val!==null) return String(val.value??`[${key}]`)
+        return String(val)
+      })
+      md+=`：${preview}`
+    }
     md+='\n'
   } else {
     md+=`${p} ${tree.name}\n\n`

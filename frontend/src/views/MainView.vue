@@ -64,6 +64,7 @@
 
       </section>
     </transition>
+    <AnchorConfirm v-model="confirmVisible" :data="confirmData" @confirm="onAnchorConfirm" />
   </div>
 </template>
 
@@ -79,6 +80,7 @@ import SkillFactoryProgress from '../components/SkillFactoryProgress.vue'
 import ToolCallBlock from '../components/ToolCallBlock.vue'
 import MemoryPanel from '../components/MemoryPanel.vue'
 import SkillsManager from '../components/SkillsManager.vue'
+import AnchorConfirm from '../components/AnchorConfirm.vue'
 import { sendMessage, fetchSessions, deleteSession, fetchArtifacts } from '../utils/sse.js'
 import { useConversation } from '../composables/useConversation.js'
 
@@ -86,6 +88,7 @@ const conv = useConversation()
 
 const sessions = ref([]), sid = ref(''), loading = ref(false)
 const outLoading = ref(false), streamReply = ref('')
+const confirmVisible = ref(false), confirmData = ref(null)
 const reportLoading = ref(false)
 const msgsCtn = ref(null), showRight = ref(false)
 const thinkSteps = ref([]), designSteps = ref([])
@@ -193,7 +196,8 @@ function send(text) {
       conv.addMessage({ _tid: Date.now(), role: 'assistant', content: `看网能力「${d.skill_name}」已沉淀到 ${d.skill_dir}`,
         msg_type: 'text', created_at: new Date().toISOString() })
     },
-    onDataExecuting() {}, onDataExecuted() {}, onConfirmRequired() {},
+    onDataExecuting() {}, onDataExecuted() {},
+    onConfirmRequired(d) { confirmData.value = d; confirmVisible.value = true },
     onError(m) {
       streamReply.value = ''
       conv.addMessage({ _tid: Date.now(), role: 'assistant', content: m, msg_type: 'error', created_at: new Date().toISOString() })
@@ -226,6 +230,11 @@ function send(text) {
   })
 }
 
+function onAnchorConfirm(nodeId) {
+  const ancestor = confirmData.value?.ancestors?.find(a => a.id === nodeId)
+  if (ancestor) send(`选择${ancestor.label}：${ancestor.name}`)
+  else send(`选择：${nodeId}`)
+}
 function onConfirm(a) {
   if (a.action === 'persist') {
     for (let i = conv.messages.value.length - 1; i >= 0; i--) {
@@ -245,7 +254,13 @@ function rJson(tree, d = 0) {
     md += `- **${tree.name}**`
     const para = tree.paragraph
     if (para?.content) {
-      const preview = para.content.replace(/\{(\w+)\}/g, '[$1]')
+      const params = para.params || {}
+      const preview = para.content.replace(/\{(\w+)\}/g, (match, key) => {
+        const val = params[key]
+        if (val == null) return `[${key}]`
+        if (typeof val === 'object' && val !== null) return String(val.value ?? `[${key}]`)
+        return String(val)
+      })
       md += `：${preview}`
     }
     md += '\n'
