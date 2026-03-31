@@ -22,7 +22,14 @@
 import { computed } from 'vue'; import { CopyDocument, Close } from '@element-plus/icons-vue'; import { ElMessage } from 'element-plus'
 defineEmits(['close'])
 const props = defineProps({ content:{type:String,default:''},loading:Boolean,anchor:{type:Object,default:null},showHeader:{type:Boolean,default:true} })
-const html = computed(() => props.content?props.content.split('\n').map(l=>{const m=l.match(/^(#{1,6})\s+(.*)/);if(m) return `<h${m[1].length}>${m[2]}</h${m[1].length}>`;if(l.trim()) return `<p>${l}</p>`;return ''}).join(''):'')
+const html = computed(() => props.content?props.content.split('\n').map(l=>{
+  const m=l.match(/^(#{1,6})\s+(.*)/)
+  if(m) return `<h${m[1].length}>${m[2]}</h${m[1].length}>`
+  const li=l.match(/^-\s+(.*)/)
+  if(li) return `<li>${li[1].replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')}</li>`
+  if(l.trim()) return `<p>${l}</p>`
+  return ''
+}).join(''):'')
 async function copy() { try{await navigator.clipboard.writeText(props.content);ElMessage.success('已复制')}catch{ElMessage.error('复制失败')} }
 </script>
 <style scoped>
@@ -37,6 +44,8 @@ async function copy() { try{await navigator.clipboard.writeText(props.content);E
 .md :deep(h2){font-size:18px;margin:20px 0 8px}
 .md :deep(h3){font-size:16px;margin:14px 0 6px;color:var(--c-text-secondary)}
 .md :deep(p){margin:4px 0;font-size:14px;color:var(--c-text-secondary)}
+.md :deep(li){margin:3px 0 3px 20px;font-size:13px;color:var(--c-text-secondary);list-style:disc}
+.md :deep(li strong){color:var(--c-text)}
 .lb{height:3px;background:var(--c-border);border-radius:2px;overflow:hidden;margin-top:12px}
 .lb__in{height:100%;width:40%;background:linear-gradient(90deg,var(--c-primary),var(--c-primary-light));animation:slide 1.5s ease-in-out infinite}
 @keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(350%)}}

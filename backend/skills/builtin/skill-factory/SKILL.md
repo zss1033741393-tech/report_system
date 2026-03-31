@@ -27,6 +27,7 @@ executor:
     - outline_renderer
     - session_service
     - kb_store
+    - indicator_resolver
 ---
 
 # 看网能力工厂（设计态六步工作流）

@@ -236,8 +236,19 @@ function onConfirm(a) {
 async function scroll() { await nextTick(); const e = msgsCtn.value; if (e) e.scrollTop = e.scrollHeight }
 function rJson(tree, d = 0) {
   if (!tree?.name) return ''; let md = ''; const p = '#'.repeat(Math.min(d + 1, 6))
-  if (d === 0) md += `${p} ${tree.name}\n\n`
-  else if (tree.level !== 5) { md += `${p} ${tree.name}\n\n`; if (tree.intro_text) md += `${tree.intro_text}\n\n` }
+  if (d === 0) {
+    md += `${p} ${tree.name}\n\n`
+  } else if (tree.level === 5) {
+    md += `- **${tree.name}**`
+    const para = tree.paragraph
+    if (para?.content) {
+      const preview = para.content.replace(/\{(\w+)\}/g, '[$1]')
+      md += `：${preview}`
+    }
+    md += '\n'
+  } else {
+    md += `${p} ${tree.name}\n\n`
+  }
   for (const c of tree.children || []) md += rJson(c, d + 1); return md
 }
 </script>
