@@ -1,3 +1,4 @@
+import re
 from typing import AsyncGenerator
 
 class OutlineRenderer:
@@ -21,9 +22,32 @@ class OutlineRenderer:
             async for c in self._node(child, depth, num): yield c
 
     async def _node(self, node, depth, num):
-        if node.get("level",0) == 5: return
+        level = node.get("level", 0)
+        if level == 5:
+            paragraph = node.get("paragraph", {})
+            content = paragraph.get("content", "")
+            if content:
+                params = paragraph.get("params", {})
+                text = self._replace_params(content, params)
+                yield f"- **{node.get('name','')}**：{text}\n"
+            else:
+                yield f"- **{node.get('name','')}**\n"
+            return
         prefix = "#" * min(depth+1, 6)
         yield f"{prefix} {num}. {node.get('name','')}\n\n"
         children = node.get("children", [])
         if children:
             async for c in self._children(children, depth+1, f"{num}."): yield c
+
+    @staticmethod
+    def _replace_params(content: str, params: dict) -> str:
+        """将 content 中的 {key} 占位符替换为 params 中的值，未匹配的保持原样。"""
+        def replacer(m):
+            key = m.group(1)
+            val = params.get(key)
+            if val is None:
+                return m.group(0)
+            if isinstance(val, dict):
+                return str(val.get("value", m.group(0)))
+            return str(val)
+        return re.sub(r'\{(\w+)\}', replacer, content)

@@ -46,7 +46,7 @@
       "metrics": ["coverage_rate", "threshold"],
       "tables": ["site_coverage_rate"],
       "data_source": "Mock",
-      "params": {}
+      "params": {"threshold": 80}
     }
   },
   "Indicator_10": {
@@ -86,7 +86,7 @@
       "metrics": ["low_util_count", "mid_util_count", "high_util_count", "threshold"],
       "tables": ["site_low_cross_utilization"],
       "data_source": "Mock",
-      "params": {}
+      "params": {"threshold": 80}
     }
   },
   "Indicator_16": {
@@ -96,7 +96,7 @@
       "metrics": ["threshold"],
       "tables": ["site_device_low_cross_detail"],
       "data_source": "Mock",
-      "params": {}
+      "params": {"threshold": 80}
     }
   },
   "Indicator_18": {
@@ -106,7 +106,7 @@
       "metrics": ["avg_slot_util", "threshold", "overload_count"],
       "tables": ["chassis_slot_utilization"],
       "data_source": "Mock",
-      "params": {}
+      "params": {"threshold": 80}
     }
   },
   "Indicator_19": {
@@ -116,7 +116,7 @@
       "metrics": ["min_free_slots"],
       "tables": ["chassis_service_slot_detail"],
       "data_source": "Mock",
-      "params": {}
+      "params": {"min_free_slots": 2}
     }
   },
   "Indicator_21": {

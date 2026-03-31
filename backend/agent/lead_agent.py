@@ -309,12 +309,15 @@ class LeadAgent:
                 elif isinstance(item, str):
                     yield item
             if result and result.success:
+                subtree = result.data.get("subtree")
                 await self._ch.save_outline_state(
                     ctx.session_id,
-                    result.data.get("subtree"),
+                    subtree,
                     result.data.get("anchor"),
                 )
-                yield self._ev("chat_reply", content="大纲已生成，请查看右侧面板。")
+                if subtree:
+                    yield self._ev("outline_updated", outline_json=subtree)
+                yield self._ev("chat_reply", content="大纲已生成，请查看右侧面板。\n\n是否立即生成报告？")
                 await self._ch.add_message(ctx.session_id, "assistant", "已生成大纲", msg_type="outline")
 
     @staticmethod

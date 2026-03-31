@@ -156,7 +156,10 @@ function send(text) {
       if (a) conv.anchorInfo.value = a
       // 大纲流结束后从 API 拉取 outline JSON，实时更新侧边栏（无需切换会话）
       fetchArtifacts(sid.value).then(artifacts => {
-        if (artifacts.outline_json) conv.updateOutline(artifacts.outline_json, artifacts.anchor_info || null)
+        if (artifacts.outline_json) {
+          conv.updateOutline(artifacts.outline_json, artifacts.anchor_info || null)
+          showRight.value = true
+        }
       }).catch(() => {})
     },
     onOutlineUpdated(j) {
