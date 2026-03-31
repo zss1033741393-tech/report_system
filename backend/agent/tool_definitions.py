@@ -478,7 +478,7 @@ def register_all_tools(registry: ToolRegistry):
         description=(
             "按裁剪指令删除、筛选或保留大纲节点。"
             "用户说'不看XX/删除XX/去掉XX'时调用。"
-            "执行后必须重新调用 execute_data + render_report 刷新报告。"
+            "裁剪完成后询问用户是否重新生成报告，不得自动调用 execute_data/render_report。"
         ),
         parameters={
             "type": "object",
@@ -494,9 +494,10 @@ def register_all_tools(registry: ToolRegistry):
         name="inject_params",
         description=(
             "注入运行时过滤参数（行业筛选/阈值修改等）。"
-            "用户说'只看XX行业/阈值改为XX'时调用。"
-            "必须先调用 get_current_outline 获取大纲 JSON，从中找到目标 L5 节点的 node_id。"
-            "执行后必须重新调用 execute_data + render_report 刷新报告。"
+            "用户说'只看XX行业/阈值改为XX/改成XX%'时调用。"
+            "调用前必须先执行 get_current_outline 获取大纲 JSON，从中精确找到目标 L5 节点的 node_id，"
+            "不得凭记忆猜测 node_id。同一参数涉及多个节点时，需对每个节点分别调用本工具。"
+            "注入完成后询问用户是否生成报告，不得自动调用 execute_data/render_report。"
         ),
         parameters={
             "type": "object",
