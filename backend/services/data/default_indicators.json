@@ -1,0 +1,142 @@
+{
+  "Indicator_4": {
+    "indicator_name": "企业行业分布",
+    "paragraph": {
+      "content": "当前区域内共识别价值企业{total_enterprises}家，按行业分布：{top_industries}。金融、政府、医疗等高价值行业占比{high_value_ratio}%，是 fgOTN 专线部署的优先目标群体。",
+      "metrics": ["total_enterprises", "top_industries", "high_value_ratio"],
+      "tables": ["enterprise_industry"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_5": {
+    "indicator_name": "企业行政区分布",
+    "paragraph": {
+      "content": "价值企业行政区分布情况：{district_distribution}。企业集中度最高的区域为{top_district}，共{top_district_count}家，是重点覆盖方向。",
+      "metrics": ["district_distribution", "top_district", "top_district_count"],
+      "tables": ["enterprise_district"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_6": {
+    "indicator_name": "企业城市分布",
+    "paragraph": {
+      "content": "价值企业在城市层面的热力分布如右图所示，热力集中区域代表潜在专线需求密集地带，建议优先在该区域推进站点 OTN 化改造。",
+      "metrics": [],
+      "tables": ["enterprise_city_heatmap"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_7": {
+    "indicator_name": "企业详情",
+    "paragraph": {
+      "content": "以下列出当前区域内识别到的价值企业明细，包含企业名称、行业、所在区域及当前专线开通状态，供商务人员参考跟进。",
+      "metrics": [],
+      "tables": ["enterprise_detail"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_9": {
+    "indicator_name": "OTN站点企业覆盖率",
+    "paragraph": {
+      "content": "当前 OTN 站点对价值企业的总体覆盖率为{coverage_rate}%。覆盖率低于{threshold}%的站点存在明显覆盖盲区，建议优先规划站点下沉或新建。",
+      "metrics": ["coverage_rate", "threshold"],
+      "tables": ["site_coverage_rate"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_10": {
+    "indicator_name": "OTN站点覆盖企业数量",
+    "paragraph": {
+      "content": "各 OTN 站点覆盖企业数量统计：覆盖企业总数{covered_enterprises}家，未覆盖企业{uncovered_enterprises}家。覆盖企业数量排名前列的站点为优先演进候选站点。",
+      "metrics": ["covered_enterprises", "uncovered_enterprises"],
+      "tables": ["site_coverage_count"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_11": {
+    "indicator_name": "OTN站点覆盖企业行政区域分布",
+    "paragraph": {
+      "content": "已被 OTN 站点覆盖的价值企业按行政区分布如下：{covered_district_distribution}，覆盖集中度最高的区域为{top_covered_district}。",
+      "metrics": ["covered_district_distribution", "top_covered_district"],
+      "tables": ["covered_enterprise_district"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_12": {
+    "indicator_name": "OTN站点未覆盖企业行政区域分布",
+    "paragraph": {
+      "content": "尚未被 OTN 站点覆盖的价值企业按行政区分布如下：{uncovered_district_distribution}，未覆盖企业最集中的区域为{top_uncovered_district}，建议优先推进该区域的站点 OTN 下沉。",
+      "metrics": ["uncovered_district_distribution", "top_uncovered_district"],
+      "tables": ["uncovered_enterprise_district"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_15": {
+    "indicator_name": "站点低阶交叉容量利用率区间分布",
+    "paragraph": {
+      "content": "全网站点低阶交叉容量利用率分布：0-60% 共{low_util_count}个站点，60-80% 共{mid_util_count}个站点，80%以上共{high_util_count}个站点。利用率超过{threshold}%的站点存在资源瓶颈，需优先规划扩容或部署 fgOTN 细颗粒管道。",
+      "metrics": ["low_util_count", "mid_util_count", "high_util_count", "threshold"],
+      "tables": ["site_low_cross_utilization"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_16": {
+    "indicator_name": "站点设备低阶交叉容量使用详情",
+    "paragraph": {
+      "content": "以下为各站点设备低阶交叉资源使用详情，包含子架型号、低阶交叉总量、已用量及利用率，利用率超过{threshold}%的设备建议重点关注。",
+      "metrics": ["threshold"],
+      "tables": ["site_device_low_cross_detail"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_18": {
+    "indicator_name": "子架槽位利用率区间分布",
+    "paragraph": {
+      "content": "全网子架槽位利用率分布：整体平均利用率{avg_slot_util}%。槽位利用率超过{threshold}%的子架共{overload_count}个，这些设备在部署 fgOTN 单板时需评估是否具备空余槽位。",
+      "metrics": ["avg_slot_util", "threshold", "overload_count"],
+      "tables": ["chassis_slot_utilization"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_19": {
+    "indicator_name": "子架业务槽位使用详情",
+    "paragraph": {
+      "content": "以下为各子架业务槽位使用明细，包含子架编号、业务槽位总量、已用槽位及剩余可用槽位，剩余槽位大于{min_free_slots}的子架具备 fgOTN 单板部署条件。",
+      "metrics": ["min_free_slots"],
+      "tables": ["chassis_service_slot_detail"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_21": {
+    "indicator_name": "站点支持部署fgOTN单板的子架详情",
+    "paragraph": {
+      "content": "以下列出支持部署 fgOTN 单板的子架详情，包含站点名称、子架型号、可用槽位及当前软件版本，共识别到{eligible_chassis_count}个满足条件的子架，可直接配套部署细颗粒功能板。",
+      "metrics": ["eligible_chassis_count"],
+      "tables": ["site_fgotn_eligible_chassis"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  },
+  "Indicator_22": {
+    "indicator_name": "站点支持部署fgOTN单板的状态分布",
+    "paragraph": {
+      "content": "站点 fgOTN 支持度状态分布：直接支持（无需改造）{direct_support_count}个站点，需升级软件{upgrade_count}个站点，需新增子架{new_chassis_count}个站点，不支持{unsupported_count}个站点。",
+      "metrics": ["direct_support_count", "upgrade_count", "new_chassis_count", "unsupported_count"],
+      "tables": ["site_fgotn_status"],
+      "data_source": "Mock",
+      "params": {}
+    }
+  }
+}

@@ -18,6 +18,7 @@ executor:
     - neo4j_retriever
     - outline_renderer
     - session_service
+    - indicator_resolver
   config:
     top_k: 10
     score_threshold: 0.5

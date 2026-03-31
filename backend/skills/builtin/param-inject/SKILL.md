@@ -4,10 +4,10 @@ display_name: 参数透传注入
 description: 将用户指定的参数（行业、阈值、时间范围等）注入对应节点的数据绑定配置，替代原 threshold-modify
 enabled: true
 params:
-  target_node:
+  node_id:
     type: string
     required: false
-    description: 目标节点名称
+    description: 目标 L5 节点的 id（从大纲 JSON 中获取），为空则全局注入
   param_key:
     type: string
     required: true
@@ -16,6 +16,10 @@ params:
     type: string
     required: true
     description: 参数值
+  operator:
+    type: string
+    required: false
+    description: "比较运算符：lt/lte/gt/gte/eq，默认 eq"
 executor:
   module: param_inject_executor
   class: ParamInjectExecutor

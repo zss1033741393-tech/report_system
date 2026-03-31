@@ -29,9 +29,11 @@ def _ts(step, status, detail, data=None):
 
 class GraphRAGExecutor:
     def __init__(self, llm_service, embedding_service, faiss_retriever, neo4j_retriever,
-                 outline_renderer, session_service, top_k=10, score_threshold=0.5):
+                 outline_renderer, session_service, indicator_resolver=None,
+                 top_k=10, score_threshold=0.5):
         self._llm = llm_service; self._emb = embedding_service; self._faiss = faiss_retriever
         self._neo4j = neo4j_retriever; self._render = outline_renderer; self._session = session_service
+        self._indicator_resolver = indicator_resolver
         self._top_k = top_k; self._threshold = score_threshold
 
     async def execute(self, ctx: SkillContext) -> AsyncGenerator[Union[str, SkillResult], None]:
@@ -52,6 +54,8 @@ class GraphRAGExecutor:
                 loaded = self._load_skill_outline(match.skill_dir)
                 if loaded:
                     outline_json, outline_md = loaded
+                    # 合并 paragraph（Skill 专属 indicators.json 优先）
+                    self._merge_paragraph(outline_json, skill_dir=match.skill_dir)
                     ai = {"name": outline_json.get("name",""), "level": outline_json.get("level",2), "skill_dir": match.skill_dir}
                     yield json.dumps({"type":"outline_chunk","content":outline_md}, ensure_ascii=False)
                     yield json.dumps({"type":"outline_done","anchor":ai}, ensure_ascii=False)
@@ -132,6 +136,9 @@ class GraphRAGExecutor:
                 remaining = self._count_children(subtree)
                 yield _ts("condition_filter","done",f"裁剪完成，保留 {remaining} 个节点")
 
+        # Step 6.8: 合并 paragraph 到 L5 节点
+        self._merge_paragraph(subtree, skill_dir="")
+
         # Step 7: 渲染大纲
         yield _ts("outline_render","running","正在生成大纲..."); trace.start_timer("s7"); chunks=[]
         async for c in self._render.render_stream(subtree, anchor):
@@ -151,6 +158,7 @@ class GraphRAGExecutor:
         subtree = await self._neo4j.get_subtree(node_id)
         if not subtree: yield _ts("subtree_fetch","done","空"); yield SkillResult(False,"子树为空"); return
         yield _ts("subtree_fetch","done","完成")
+        self._merge_paragraph(subtree, skill_dir="")
         anchor = {"selected_id":ni["id"],"selected_name":ni["name"],"level":ni["level"]}
         yield _ts("outline_render","running","生成大纲..."); chunks=[]
         async for c in self._render.render_stream(subtree, anchor):
@@ -248,6 +256,23 @@ class GraphRAGExecutor:
         for c in node.get("children", []):
             count += GraphRAGExecutor._count_children(c)
         return count
+
+    def _merge_paragraph(self, node: dict, skill_dir: str = "") -> None:
+        """遍历大纲所有 L5 节点，从 IndicatorResolver 读取 paragraph 并写入节点。"""
+        if not self._indicator_resolver:
+            return
+        self._merge_paragraph_node(node, skill_dir)
+
+    def _merge_paragraph_node(self, node: dict, skill_dir: str) -> None:
+        if node.get("level") == 5:
+            if "paragraph" not in node:
+                node["paragraph"] = self._indicator_resolver.resolve(
+                    node_id=node.get("id", ""),
+                    node_name=node.get("name", ""),
+                    skill_dir=skill_dir,
+                )
+        for child in node.get("children", []):
+            self._merge_paragraph_node(child, skill_dir)
 
     @staticmethod
     def _load_skill_outline(skill_dir: str):

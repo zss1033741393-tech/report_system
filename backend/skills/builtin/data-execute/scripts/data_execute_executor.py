@@ -1,4 +1,4 @@
-"""数据执行器。按大纲顺序执行各节点的数据绑定。"""
+"""数据执行器。按大纲顺序执行各节点的数据绑定，支持 node_id 精准参数注入。"""
 import json
 import logging
 from typing import AsyncGenerator, Union
@@ -23,45 +23,62 @@ class DataExecuteExecutor:
             yield SkillResult(False, "没有可执行的大纲")
             return
 
-        # 从 Redis 取会话条件
-        key = f"conditions:{ctx.session_id}"
-        raw = await self._session.redis.get(key)
-        conditions = json.loads(raw) if raw else {}
-
-        # 从会话或参数取绑定配置
-        bindings_raw = ctx.params.get("bindings", [])
-        bindings_map = {b["node_name"]: b for b in bindings_raw} if bindings_raw else {}
+        # 全局条件（兼容旧逻辑）
+        global_key = f"conditions:{ctx.session_id}"
+        raw = await self._session.redis.get(global_key)
+        global_conditions = json.loads(raw) if raw else {}
 
         yield json.dumps({"type": "thinking_step", "step": "data_execute",
                           "status": "running", "detail": "正在执行数据查询..."}, ensure_ascii=False)
 
-        # 遍历大纲，收集 L5 节点并执行
         results = {}
         l5_nodes = []
         self._collect_l5(outline, l5_nodes)
 
         for node in l5_nodes:
+            node_id = node.get("id", "")
             node_name = node.get("name", "")
+            paragraph = node.get("paragraph", {})
+
             yield json.dumps({"type": "data_executing", "node_name": node_name, "status": "running"}, ensure_ascii=False)
 
-            # 取绑定配置（优先参数传入，其次从 kb_contents 匹配）
-            binding = bindings_map.get(node_name, {
-                "node_name": node_name, "binding_type": "mock",
-                "mock_config": {"data_type": "TABLE", "params": {}},
-            })
+            # 合并参数（优先级从低到高：全局条件 < 节点精准注入 < paragraph.params 内置）
+            merged_params: dict = {}
 
-            # 合并条件参数
-            params = dict(binding.get("mock_config", {}).get("params", {}))
-            for pk, pv_info in conditions.items():
+            # 1. 全局条件（最低优先级）
+            for pk, pv_info in global_conditions.items():
                 if isinstance(pv_info, dict):
-                    target = pv_info.get("target_node", "")
-                    if not target or target == node_name:
-                        params[pk] = pv_info.get("value", "")
+                    merged_params[pk] = pv_info.get("value", "")
                 else:
-                    params[pk] = pv_info
+                    merged_params[pk] = pv_info
+
+            # 2. 节点精准注入参数（覆盖全局）
+            if node_id:
+                node_key = f"node_params:{ctx.session_id}:{node_id}"
+                raw_node = await self._session.redis.get(node_key)
+                node_params = json.loads(raw_node) if raw_node else {}
+                for pk, pv_info in node_params.items():
+                    if isinstance(pv_info, dict):
+                        merged_params[pk] = pv_info.get("value", "")
+                    else:
+                        merged_params[pk] = pv_info
+
+            # 3. paragraph.params 内置参数（最高优先级）
+            for pk, pv_info in paragraph.get("params", {}).items():
+                if isinstance(pv_info, dict):
+                    merged_params[pk] = pv_info.get("value", "")
+                else:
+                    merged_params[pk] = pv_info
+
+            # 构建 binding_config（兼容 MockDataService.execute 接口）
+            binding_config = {
+                "node_name": node_name,
+                "binding_type": paragraph.get("data_source", "Mock").lower() if paragraph else "mock",
+                "mock_config": {"data_type": "", "params": {}},
+            }
 
             try:
-                data = await self._mock.execute(binding, params)
+                data = await self._mock.execute(binding_config, merged_params)
                 results[node_name] = data
                 yield json.dumps({"type": "data_executed", "node_name": node_name,
                                   "data_preview": {"data_type": data.get("data_type"), "title": data.get("title")}},

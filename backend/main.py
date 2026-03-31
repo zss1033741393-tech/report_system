@@ -100,6 +100,12 @@ async def lifespan(app: FastAPI):
     mock_data_service = MockDataService(settings.MOCK_DATA_DIR)
     container.register("mock_data_service", mock_data_service)
 
+    # IndicatorResolver（L5 paragraph 模板库）
+    from services.data.indicator_resolver import IndicatorResolver
+    _default_indicators_path = os.path.join(os.path.dirname(__file__), "services", "data", "default_indicators.json")
+    indicator_resolver = IndicatorResolver(_default_indicators_path)
+    container.register("indicator_resolver", indicator_resolver)
+
     logger.info(f"ServiceContainer: {container.registered_names()}")
 
     # ─── 3. Skill 体系：扫描 + 自动加载执行器 ───

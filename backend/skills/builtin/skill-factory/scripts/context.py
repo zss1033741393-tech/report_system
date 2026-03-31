@@ -53,10 +53,11 @@ class SkillFactoryContext:
 
 class ServiceBundle:
     """打包所有服务依赖，SubSkill 按需取用。"""
-    __slots__ = ("llm", "embedding", "faiss", "neo4j", "renderer", "session", "kb")
+    __slots__ = ("llm", "embedding", "faiss", "neo4j", "renderer", "session", "kb", "indicator_resolver")
 
     def __init__(self, llm_service, embedding_service, faiss_retriever,
-                 neo4j_retriever, outline_renderer, session_service, kb_store):
+                 neo4j_retriever, outline_renderer, session_service, kb_store,
+                 indicator_resolver=None):
         self.llm = llm_service
         self.embedding = embedding_service
         self.faiss = faiss_retriever
@@ -64,3 +65,4 @@ class ServiceBundle:
         self.renderer = outline_renderer
         self.session = session_service
         self.kb = kb_store
+        self.indicator_resolver = indicator_resolver

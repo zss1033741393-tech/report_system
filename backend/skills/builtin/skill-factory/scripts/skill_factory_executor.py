@@ -14,7 +14,7 @@ if _SCRIPTS_DIR not in sys.path:
 from agent.context import SkillContext, SkillResult
 from context import SkillFactoryContext, ServiceBundle, sse_event, design_step
 from sub_skills import (
-    IntentUnderstand, StructExtract, OutlineDesign, DataBinding, ReportPreview, SkillPersist,
+    IntentUnderstand, StructExtract, OutlineDesign, DataBinding, ParagraphAlign, ReportPreview, SkillPersist,
 )
 from sub_skills.data_binding import _collect_l5_bindings
 from sub_skills.outline_design import outline_to_md
@@ -26,9 +26,11 @@ class SkillFactoryExecutor:
     """元技能执行器——纯编排。"""
 
     def __init__(self, llm_service, embedding_service, faiss_retriever,
-                 neo4j_retriever, outline_renderer, session_service, kb_store):
+                 neo4j_retriever, outline_renderer, session_service, kb_store,
+                 indicator_resolver=None):
         self._svc = ServiceBundle(llm_service, embedding_service, faiss_retriever,
-                                   neo4j_retriever, outline_renderer, session_service, kb_store)
+                                   neo4j_retriever, outline_renderer, session_service, kb_store,
+                                   indicator_resolver)
 
     async def execute(self, ctx: SkillContext) -> AsyncGenerator[Union[str, SkillResult], None]:
         mode = ctx.params.get("mode", "full")
@@ -50,8 +52,8 @@ class SkillFactoryExecutor:
         # ─── full / preview_only：完整流程 ───
         fc = SkillFactoryContext(raw_input=expert_input, mode=mode)
 
-        # 执行 Sub-Step 1-5
-        steps = [IntentUnderstand, StructExtract, OutlineDesign, DataBinding, ReportPreview]
+        # 执行 Sub-Step 1-5（含 Step 4.5 ParagraphAlign）
+        steps = [IntentUnderstand, StructExtract, OutlineDesign, DataBinding, ParagraphAlign, ReportPreview]
         for StepClass in steps:
             step = StepClass(self._svc)
             async for event in step.run(fc, ctx):

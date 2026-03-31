@@ -51,6 +51,21 @@ enabled: true
         with open(f"{skill_dir}/references/query_variants.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(fc.query_variants))
 
+        # 写入 indicators.json（Skill 专属 paragraph 模板，供运行态 IndicatorResolver 优先读取）
+        indicators = {}
+        for binding in fc.bindings:
+            node_id = binding.get("node_id", "")
+            if node_id:
+                indicators[node_id] = {
+                    "indicator_name": binding.get("node_name", ""),
+                    "paragraph": binding.get("paragraph", {
+                        "content": "", "metrics": [], "tables": [], "data_source": "Mock", "params": {}
+                    }),
+                }
+        with open(f"{skill_dir}/references/indicators.json", "w", encoding="utf-8") as f:
+            json.dump(indicators, f, ensure_ascii=False, indent=2)
+        logger.info(f"SkillPersist: 写入 indicators.json → {skill_dir}/references/indicators.json，共 {len(indicators)} 个指标")
+
         fc.skill_dir = skill_dir
 
         # 2. Neo4j：挂载 skill_path

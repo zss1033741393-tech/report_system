@@ -187,7 +187,8 @@ async def _clip_outline(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dic
 async def _inject_params(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
     param_key = args.get("param_key", "")
     param_value = args.get("param_value", "")
-    target_node = args.get("target_node", "")
+    node_id = args.get("node_id", "")
+    operator = args.get("operator", "eq")
     if not param_key:
         yield {"result": SkillResult(False, "缺少 param_key 参数")}
         return
@@ -200,7 +201,8 @@ async def _inject_params(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[di
     skill_ctx = SkillContext(
         session_id=tool_ctx.session_id,
         user_message="",
-        params={"param_key": param_key, "param_value": param_value, "target_node": target_node},
+        params={"param_key": param_key, "param_value": param_value,
+                "node_id": node_id, "operator": operator},
         trace_callback=tool_ctx.trace_callback,
     )
     result = None
@@ -480,14 +482,23 @@ def register_all_tools(registry: ToolRegistry):
         description=(
             "注入运行时过滤参数（行业筛选/阈值修改等）。"
             "用户说'只看XX行业/阈值改为XX'时调用。"
+            "必须先调用 get_current_outline 获取大纲 JSON，从中找到目标 L5 节点的 node_id。"
             "执行后必须重新调用 execute_data + render_report 刷新报告。"
         ),
         parameters={
             "type": "object",
             "properties": {
-                "param_key": {"type": "string", "description": "参数名，如 industry/threshold"},
-                "param_value": {"type": "string", "description": "参数值"},
-                "target_node": {"type": "string", "description": "目标节点名（可选，为空则全局注入）"},
+                "node_id": {
+                    "type": "string",
+                    "description": "目标 L5 节点的 id（从大纲 JSON 中获取），为空则全局注入",
+                },
+                "param_key": {"type": "string", "description": "参数名，如 bandwidth_threshold / industry"},
+                "param_value": {"type": "string", "description": "参数值，如 '100' / '金融'"},
+                "operator": {
+                    "type": "string",
+                    "description": "比较运算符：lt/lte/gt/gte/eq，默认 eq",
+                    "enum": ["lt", "lte", "gt", "gte", "eq"],
+                },
             },
             "required": ["param_key", "param_value"],
         },

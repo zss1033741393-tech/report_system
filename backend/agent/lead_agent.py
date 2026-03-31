@@ -41,7 +41,7 @@ BASE_INSTRUCTIONS = """\
 
 ### 当 has_outline=true（会话已有大纲）时：
 - 用户要求删除/不看某节点（"删除XX"/"去掉XX"/"不看XX"）→ 直接调 clip_outline，不要再调 search_skill
-- 用户修改参数/阈值/过滤条件 → inject_params
+- 用户修改参数/阈值/过滤条件 → 先调 get_current_outline 获取大纲 JSON，从中找到相关 L5 节点的 node_id，再调 inject_params(node_id, param_key, param_value, operator)；如果无法确定具体 node_id，可以 node_id 传空（全局注入）
 - 用户要求生成报告 → execute_data + render_report
 - 用户说"保存/沉淀/确认保存" → persist_skill
 
