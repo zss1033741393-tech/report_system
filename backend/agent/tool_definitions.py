@@ -14,12 +14,37 @@
 import json
 import logging
 import os
+import re
 from typing import AsyncGenerator
 
 from agent.context import SkillContext, SkillResult
 from agent.tool_registry import ToolContext, ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _query_matches_anchor(query: str, anchor_name: str) -> bool:
+    """检查查询内容与锚点名称是否有字符级关联。
+
+    用于过滤 L1 级别的降级误匹配：当 LLM 无法找到精确锚点时会选
+    顶层宽泛节点（L1），此时锚点名与用户意图往往毫无关联。
+    策略：提取锚点名中的中文 2-gram 和长度≥3 的英文词，
+    若均不出现在 query 中则判定为无关。
+    """
+    if not anchor_name:
+        return False
+    # 中文 2-gram 滑动匹配
+    zh_segs = re.findall(r'[\u4e00-\u9fff]+', anchor_name)
+    for seg in zh_segs:
+        for i in range(len(seg) - 1):
+            if seg[i:i + 2] in query:
+                return True
+    # 英文/数字词（长度≥3）大小写不敏感
+    en_words = re.findall(r'[A-Za-z0-9]+', anchor_name)
+    for word in en_words:
+        if len(word) >= 3 and word.lower() in query.lower():
+            return True
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -117,20 +142,36 @@ async def _search_skill(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dic
             if result.success:
                 subtree = result.data.get("subtree")
                 if subtree:
-                    # 正常大纲生成完成，更新工具上下文并持久化
-                    tool_ctx.current_outline = subtree
-                    tool_ctx.has_outline = True
-                    anchor = result.data.get("anchor")
-                    if anchor:
-                        await tool_ctx.chat_history.save_outline_state(
-                            tool_ctx.session_id,
-                            subtree,
-                            anchor,
+                    anchor = result.data.get("anchor") or {}
+                    anchor_level = anchor.get("level", -1)
+                    anchor_name = anchor.get("name", "")
+
+                    # L1 降级误匹配检测：顶层宽泛节点且与查询无字符关联，
+                    # 说明知识库中没有与用户意图匹配的具体场景。
+                    if anchor_level <= 1 and not _query_matches_anchor(query, anchor_name):
+                        logger.warning(
+                            f"search_skill: L1 降级误匹配，拒绝 anchor={anchor_name!r} query={query!r}"
                         )
+                        result = SkillResult(
+                            False,
+                            f"未在知识库中找到与「{query}」直接匹配的分析场景。"
+                            f"请尝试更具体的描述，例如：「帮我分析fgOTN部署机会」"
+                            f"或「分析政企OTN站点容量」。",
+                        )
+                    else:
+                        # 正常大纲生成完成，更新工具上下文并持久化
+                        tool_ctx.current_outline = subtree
+                        tool_ctx.has_outline = True
+                        if anchor:
+                            await tool_ctx.chat_history.save_outline_state(
+                                tool_ctx.session_id,
+                                subtree,
+                                anchor,
+                            )
                 # else: L5 确认场景，subtree 为 None，不标记 has_outline
 
                 # L5 确认场景：额外发送 confirm_required SSE 事件触发前端对话框
-                if result.data.get("type") == "confirm_required":
+                if result.success and (result.data or {}).get("type") == "confirm_required":
                     yield {"sse": json.dumps({
                         "type": "confirm_required",
                         "indicator_name": result.data.get("indicator_name", ""),
@@ -451,6 +492,8 @@ def register_all_tools(registry: ToolRegistry):
             "在知识库中搜索与用户问题匹配的已沉淀看网能力，返回结构化大纲。"
             "用户提出网络分析需求时首先调用此工具。"
             "若匹配成功则加载已沉淀大纲；否则通过 GraphRAG 生成临时大纲。"
+            "若返回 success=false 且提示未找到匹配场景，说明知识库中确实没有对应能力，"
+            "应直接告知用户，不得重试或使用更宽泛的关键词重新搜索。"
         ),
         parameters={
             "type": "object",

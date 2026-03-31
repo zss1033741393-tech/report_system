@@ -36,7 +36,12 @@ BASE_INSTRUCTIONS = """\
 - 【严禁】在未实际调用工具的情况下，用文字声称已完成工具操作（如"已为您修改了阈值"）
 - 【严禁】假装或推测工具结果：必须真实调用工具并等待返回，才能向用户报告操作结果
 - 每一句"已完成/已修改/已注入/已执行"，背后必须有对应的实际工具调用记录
+- 每轮对话都是独立的工具执行序列：即使上一轮对话中已执行过相同操作（如第二轮调用过 inject_params 修改过阈值），本轮同类请求也必须重新执行完整工具流程，不得因"上次已操作过"而省略工具调用
 - 如果不确定需要调用哪个工具，宁可多调用一次 get_session_status/get_current_outline 确认，也不得直接用文字回复
+
+## search_skill 失败处理规则
+- 若 search_skill 返回 success=false 且错误信息包含"未在知识库中找到"，说明知识库中没有匹配的分析场景，必须直接将错误信息转述给用户，【严禁重试 search_skill 或编造结果】
+- 不得因为一次失败就换更宽泛的描述重新搜索，这样会引入无关场景
 
 ## 核心工作方式
 1. 首先调用 get_session_status 了解当前会话状态
@@ -48,10 +53,11 @@ BASE_INSTRUCTIONS = """\
 ### 当 has_outline=true（会话已有大纲）时：
 - 用户要求删除/不看某节点（"删除XX"/"去掉XX"/"不看XX"）→ 直接调 clip_outline，不要再调 search_skill
 - 用户修改参数/阈值/过滤条件（"阈值改为XX"/"改成XX%"/"只看XX行业"/"筛选XX"）→
-  ① 必须先调 get_current_outline 获取最新大纲 JSON（不得凭上下文记忆猜测 node_id）
+  ① 必须先调 get_current_outline 获取最新大纲 JSON（不得凭记忆或历史对话猜测 node_id）
   ② 从返回的 JSON 中找到所有包含该参数的 L5 节点的 node_id
   ③ 对每个目标节点分别调用 inject_params(node_id, param_key, param_value, operator)
   ④ 全部注入完成后，告知用户哪些节点已更新，询问是否生成报告
+  【注意】即使本轮与上一轮修改的是同一参数（如连续两轮修改阈值），也必须重新执行 ①②③ 全部步骤
   【此流程每个步骤必须实际执行，不得跳过，不得用文字描述代替工具调用】
 - 用户要求生成报告 → execute_data + render_report
 - 用户说"保存/沉淀/确认保存" → persist_skill
