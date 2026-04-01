@@ -1,0 +1,25 @@
+{
+  "data_type": "BAR_CHART",
+  "title": "站点低阶交叉容量利用率区间分布",
+  "data": [
+    {
+      "category": "0-60%",
+      "value": 37
+    },
+    {
+      "category": "60-80%",
+      "value": 26
+    },
+    {
+      "category": "80%以上",
+      "value": 34
+    }
+  ],
+  "params_used": {},
+  "metric_values": {
+    "low_util_count": 37,
+    "mid_util_count": 26,
+    "high_util_count": 34,
+    "threshold": 80
+  }
+}

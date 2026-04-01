@@ -37,6 +37,8 @@ export function sendMessage(sid, message, cb) {
             case 'data_executed': cb.onDataExecuted?.(d); break
             case 'awaiting_confirm': cb.onAwaitingConfirm?.(d); break
             case 'confirm_required': cb.onConfirmRequired?.(d); break
+            case 'report_patch': cb.onReportPatch?.(d); break
+            case 'report_rollback': cb.onReportRollback?.(d); break
             case 'error': cb.onError?.(d.message); break
             case 'done': cb.onDone?.(); break
           }

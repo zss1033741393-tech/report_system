@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     REACT_MAX_STEPS: int = 15
 
     # ─── 报告 ───
-    REPORT_TEMPLATE_DIR: str = "./templates/report"
+    REPORT_TEMPLATE_DIR: str = "./skills/builtin/report-generate/templates/report"
 
     # ─── Mock 数据 ───
     MOCK_DATA_DIR: str = "./data/mock"

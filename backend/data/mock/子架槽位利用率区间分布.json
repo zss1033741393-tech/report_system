@@ -1,0 +1,24 @@
+{
+  "data_type": "BAR_CHART",
+  "title": "子架槽位利用率区间分布",
+  "data": [
+    {
+      "category": "0-60%",
+      "value": 36
+    },
+    {
+      "category": "60-80%",
+      "value": 78
+    },
+    {
+      "category": "80%以上",
+      "value": 17
+    }
+  ],
+  "params_used": {},
+  "metric_values": {
+    "avg_slot_util": 61.6,
+    "threshold": 80,
+    "overload_count": 17
+  }
+}

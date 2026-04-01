@@ -1,0 +1,32 @@
+{
+  "data_type": "BAR_CHART",
+  "title": "站点OTN下沉统计",
+  "data": [
+    {
+      "category": "江南区",
+      "value": 26
+    },
+    {
+      "category": "青秀区",
+      "value": 7
+    },
+    {
+      "category": "兴宁区",
+      "value": 17
+    },
+    {
+      "category": "邕宁区",
+      "value": 13
+    },
+    {
+      "category": "西乡塘区",
+      "value": 39
+    },
+    {
+      "category": "良庆区",
+      "value": 13
+    }
+  ],
+  "params_used": {},
+  "metric_values": {}
+}

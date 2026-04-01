@@ -1,0 +1,13 @@
+{
+  "data_type": "SINGLE_VALUE",
+  "title": "OTN站点覆盖企业数量",
+  "data": {
+    "value": 296,
+    "unit": "家"
+  },
+  "params_used": {},
+  "metric_values": {
+    "covered_enterprises": 296,
+    "uncovered_enterprises": 96
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "data_type": "SINGLE_VALUE",
+  "title": "OTN站点企业覆盖率",
+  "data": {
+    "value": 77.7,
+    "unit": "%"
+  },
+  "params_used": {},
+  "metric_values": {
+    "coverage_rate": 77.7,
+    "threshold": 80
+  }
+}

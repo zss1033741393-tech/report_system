@@ -1,0 +1,32 @@
+{
+  "data_type": "PIE_CHART",
+  "title": "企业行业分布",
+  "data": [
+    {
+      "name": "政府",
+      "value": 83
+    },
+    {
+      "name": "医疗",
+      "value": 71
+    },
+    {
+      "name": "交通",
+      "value": 56
+    },
+    {
+      "name": "科教",
+      "value": 24
+    },
+    {
+      "name": "云电竞",
+      "value": 22
+    }
+  ],
+  "params_used": {},
+  "metric_values": {
+    "total_enterprises": 256,
+    "top_industries": "政府(83家)、医疗(71家)、交通(56家)",
+    "high_value_ratio": 82.0
+  }
+}

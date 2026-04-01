@@ -516,6 +516,188 @@ def _collect_node_map(node: dict, result: dict) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 报告修改工具
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def _load_latest_report_html(tool_ctx: ToolContext) -> str:
+    """从对话历史中加载最近一条包含 report_html 的消息，返回 HTML 字符串。"""
+    try:
+        msgs = await tool_ctx.chat_history.get_messages(tool_ctx.session_id, limit=50)
+        for m in reversed(msgs):
+            meta = m.get("metadata") or {}
+            if meta.get("report_html"):
+                return meta["report_html"]
+    except Exception as e:
+        logger.warning(f"加载报告 HTML 失败: {e}")
+    return ""
+
+async def _modify_report_data(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
+    """数据层修改：修改参数后局部刷新报告对应章节。"""
+    instruction = args.get("instruction", "")
+    if not instruction:
+        yield {"result": SkillResult(False, "缺少 instruction 参数")}
+        return
+
+    sid = tool_ctx.session_id
+    outline_state = await tool_ctx.chat_history.get_outline_state(sid)
+    if not outline_state or not outline_state.get("outline_json"):
+        yield {"result": SkillResult(False, "当前没有大纲，无法修改报告")}
+        return
+
+    outline = outline_state["outline_json"]
+    report_html = await _load_latest_report_html(tool_ctx)
+    if not report_html:
+        yield {"result": SkillResult(False, "当前没有已生成的报告，请先生成报告")}
+        return
+
+    # 定位目标章节
+    try:
+        import sys as _sys
+        _modify_scripts = os.path.normpath(os.path.join(
+            os.path.dirname(__file__), "..", "skills", "builtin", "report-modify", "scripts"
+        ))
+        if _modify_scripts not in _sys.path:
+            _sys.path.insert(0, _modify_scripts)
+        from section_resolver import resolve_section
+    except Exception as e:
+        yield {"result": SkillResult(False, f"章节定位模块加载失败: {e}")}
+        return
+
+    resolved = resolve_section(instruction, outline)
+    node_ids = resolved.get("node_ids", [])
+    yield {"sse": json.dumps({"type": "thinking_step", "step": "modify_report",
+                              "status": "running",
+                              "detail": f"定位章节：{resolved.get('parsed_action', '')}"}, ensure_ascii=False)}
+
+    # 从 instruction 中提取参数（简单解析：数字+%）
+    import re as _re
+    param_matches = _re_param_from_instruction(instruction)
+    updated_params = {}
+    for key, val in param_matches.items():
+        updated_params[key] = val
+
+    # 重新执行数据并生成 patch
+    from services.data.data_service_factory import create_data_service
+    try:
+        from report_modify_executor import modify_data  # 已在 sys.path 中
+        result = await modify_data(
+            outline=outline,
+            report_html=report_html,
+            target_node_ids=node_ids,
+            updated_params=updated_params,
+            data_service=create_data_service(),
+        )
+    except Exception as e:
+        logger.error(f"modify_report_data 执行失败: {e}", exc_info=True)
+        yield {"result": SkillResult(False, f"修改失败: {e}")}
+        return
+
+    # 推送局部 patch 事件
+    for patch in result.get("patches", []):
+        yield {"sse": json.dumps({"type": "report_patch",
+                                  "node_id": patch["node_id"],
+                                  "html": patch["html"]}, ensure_ascii=False)}
+
+    new_html = result.get("new_report_html", report_html)
+    yield {"result": SkillResult(True, f"已局部刷新报告（{len(result.get('patches', []))} 个节点）",
+                                 data={"report_html": new_html,
+                                       "patch_count": len(result.get("patches", []))})}
+
+
+def _re_param_from_instruction(instruction: str) -> dict:
+    """从指令文本中提取参数，如"阈值改为90%" → {"threshold": "90"}。"""
+    params = {}
+    import re as _re
+    m = _re.search(r'(?:阈值|覆盖率)[^\d]*(\d+)', instruction)
+    if m:
+        params["threshold"] = m.group(1)
+    m = _re.search(r'(\d+)\s*%', instruction)
+    if m and "threshold" not in params:
+        params["threshold"] = m.group(1)
+    return params
+
+
+async def _modify_report_text(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
+    """文本层修改：对报告中某章节的 narrative 文字用 LLM 改写。"""
+    instruction = args.get("instruction", "")
+    if not instruction:
+        yield {"result": SkillResult(False, "缺少 instruction 参数")}
+        return
+
+    sid = tool_ctx.session_id
+    outline_state = await tool_ctx.chat_history.get_outline_state(sid)
+    if not outline_state or not outline_state.get("outline_json"):
+        yield {"result": SkillResult(False, "当前没有大纲，无法修改报告")}
+        return
+
+    outline = outline_state["outline_json"]
+    report_html = await _load_latest_report_html(tool_ctx)
+    if not report_html:
+        yield {"result": SkillResult(False, "当前没有已生成的报告，请先生成报告")}
+        return
+
+    # 定位目标章节
+    try:
+        import sys as _sys
+        _modify_scripts = os.path.normpath(os.path.join(
+            os.path.dirname(__file__), "..", "skills", "builtin", "report-modify", "scripts"
+        ))
+        if _modify_scripts not in _sys.path:
+            _sys.path.insert(0, _modify_scripts)
+        from section_resolver import resolve_section, collect_l5_nodes_under
+    except Exception as e:
+        yield {"result": SkillResult(False, f"章节定位模块加载失败: {e}")}
+        return
+
+    resolved = resolve_section(instruction, outline)
+    node_ids = resolved.get("node_ids", [])
+    yield {"sse": json.dumps({"type": "thinking_step", "step": "modify_report",
+                              "status": "running",
+                              "detail": f"定位章节：{resolved.get('parsed_action', '')}"}, ensure_ascii=False)}
+
+    # 找到目标章节下第一个 L5 节点作为改写目标
+    l5_nodes = collect_l5_nodes_under(outline, node_ids) if node_ids else []
+    if not l5_nodes:
+        yield {"result": SkillResult(False, "未找到目标 L5 指标节点，无法改写文字")}
+        return
+
+    target_node = l5_nodes[0]
+    target_node_id = target_node.get("id", "")
+    target_node_name = target_node.get("name", "")
+
+    try:
+        from report_modify_executor import modify_text  # 已在 sys.path 中
+        llm_svc = getattr(tool_ctx.container, "llm", None) if tool_ctx.container else None
+        result = await modify_text(
+            outline=outline,
+            report_html=report_html,
+            target_node_id=target_node_id,
+            instruction=instruction,
+            node_name=target_node_name,
+            llm_service=llm_svc,
+        )
+    except Exception as e:
+        logger.error(f"modify_report_text 执行失败: {e}", exc_info=True)
+        yield {"result": SkillResult(False, f"文字改写失败: {e}")}
+        return
+
+    if result.get("error"):
+        yield {"result": SkillResult(False, f"LLM 改写失败: {result['error']}")}
+        return
+
+    patch = result.get("patch")
+    if patch:
+        yield {"sse": json.dumps({"type": "report_patch",
+                                  "node_id": patch["node_id"],
+                                  "html": patch["html"]}, ensure_ascii=False)}
+
+    new_html = result.get("new_report_html", report_html)
+    yield {"result": SkillResult(True, f"已改写「{target_node_name}」的分析文字",
+                                 data={"report_html": new_html})}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 注册入口
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -691,4 +873,39 @@ def register_all_tools(registry: ToolRegistry):
             "required": [],
         },
         fn=_persist_skill,
+    )
+
+    # ── 报告修改工具 ──
+    registry.register(
+        name="modify_report_data",
+        description=(
+            "修改报告中某个章节的数据参数（如阈值、行业过滤），重新执行该节点数据查询并局部刷新报告。"
+            "用户说'把第X章的阈值改为N%'或'重新计算第X节'时调用。"
+            "调用前需确认已有报告（has_report=true）。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "用户的修改指令，如'把第一章覆盖率阈值改为90%'"},
+            },
+            "required": ["instruction"],
+        },
+        fn=_modify_report_data,
+    )
+
+    registry.register(
+        name="modify_report_text",
+        description=(
+            "对报告中某个章节的分析文字进行润色、改写或扩充。"
+            "用户说'润色第X章第Y节的结论'或'修改第X章的分析文字'时调用。"
+            "调用前需确认已有报告（has_report=true）。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "用户的改写指令，如'润色第二章第一节，增加趋势判断'"},
+            },
+            "required": ["instruction"],
+        },
+        fn=_modify_report_text,
     )

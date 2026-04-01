@@ -5,7 +5,7 @@ from typing import AsyncGenerator, Union
 from agent.context import SkillContext, SkillResult
 from services.session_service import SessionService
 from services.kb_content_store import KBContentStore
-from services.data.mock_data_service import MockDataService
+from services.data.data_service_factory import create_data_service
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ class DataExecuteExecutor:
     def __init__(self, session_service: SessionService, kb_store: KBContentStore):
         self._session = session_service
         self._kb = kb_store
-        self._mock = MockDataService()
+        self._mock = create_data_service()
 
     async def execute(self, ctx: SkillContext) -> AsyncGenerator[Union[str, SkillResult], None]:
         outline = ctx.params.get("outline_json") or ctx.current_outline

@@ -182,6 +182,15 @@ function send(text) {
       if (conv.report.value) conv.report.value.html += c
     },
     onReportDone(d) { reportLoading.value = false; if (conv.report.value) conv.report.value.title = d?.title || '报告' },
+    onReportPatch(d) {
+      if (!conv.report.value || !d?.node_id || !d?.html) return
+      const updated = conv.report.value.html.replace(
+        new RegExp(`(<div[^>]*\\bdata-node-id="${d.node_id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*>)([\\s\\S]*?)(</div>)`),
+        d.html
+      )
+      conv.report.value.html = updated
+    },
+    onReportRollback(d) { if (d?.html) conv.updateReport(d.html, d.title || '报告') },
     onDesignStep(d) {
       const existing = designSteps.value.find(s => s.step === d.step)
       if (existing) { Object.assign(existing, d) } else { designSteps.value.push(d) }

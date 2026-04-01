@@ -15,9 +15,9 @@ class ReportPreview(SubSkillBase):
     name = "report_preview"
 
     async def execute(self, fc: SkillFactoryContext, ctx: SkillContext) -> AsyncGenerator[str, None]:
-        from services.data.mock_data_service import MockDataService
+        from services.data.data_service_factory import create_data_service
         import asyncio
-        mock_svc = MockDataService()
+        mock_svc = create_data_service()
         data_results = {}
 
         # 1. Mock 数据并行获取
@@ -69,22 +69,16 @@ def _render_html(title, intro, chapters, data_results, fc):
 
 
 def _load_template() -> str:
-    """加载 Jinja2 模板：优先自有 templates/ 目录，再 report-generate，最后内联。"""
-    # 1. 自有模板
+    """加载 Jinja2 模板：优先自有 templates/ 目录，再 template_loader 统一入口。"""
+    # 1. 自有模板覆盖
     own = os.path.join(_TEMPLATE_DIR, "report.html.j2")
     if os.path.isfile(own):
         with open(own, "r", encoding="utf-8") as f:
             return f.read()
-    # 2. report-generate 的模板
+    # 2. 统一模板加载器（report-generate/templates/report/default.html.j2）
     try:
-        import importlib.util
-        rw = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "report-generate", "scripts", "report_writer.py"))
-        if os.path.isfile(rw):
-            spec = importlib.util.spec_from_file_location("_rw", rw)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            t = getattr(mod, "DEFAULT_TEMPLATE", None)
-            if t: return t
+        from services.template_loader import load_report_template
+        return load_report_template()
     except Exception:
         pass
     # 3. 内联 fallback

@@ -1,0 +1,27 @@
+{
+  "data_type": "BAR_CHART",
+  "title": "OTN站点未覆盖企业行政区域分布",
+  "data": [
+    {
+      "category": "良庆区",
+      "value": 33
+    },
+    {
+      "category": "武鸣区",
+      "value": 31
+    },
+    {
+      "category": "邕宁区",
+      "value": 28
+    },
+    {
+      "category": "江南区",
+      "value": 19
+    }
+  ],
+  "params_used": {},
+  "metric_values": {
+    "uncovered_district_distribution": "良庆区(33家)、武鸣区(31家)、邕宁区(28家)",
+    "top_uncovered_district": "良庆区"
+  }
+}

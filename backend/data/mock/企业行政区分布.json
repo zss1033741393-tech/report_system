@@ -1,0 +1,32 @@
+{
+  "data_type": "BAR_CHART",
+  "title": "企业行政区分布",
+  "data": [
+    {
+      "category": "武鸣区",
+      "value": 78
+    },
+    {
+      "category": "良庆区",
+      "value": 54
+    },
+    {
+      "category": "青秀区",
+      "value": 23
+    },
+    {
+      "category": "横县",
+      "value": 21
+    },
+    {
+      "category": "邕宁区",
+      "value": 17
+    }
+  ],
+  "params_used": {},
+  "metric_values": {
+    "district_distribution": "武鸣区(78家)、良庆区(54家)、青秀区(23家)",
+    "top_district": "武鸣区",
+    "top_district_count": 78
+  }
+}

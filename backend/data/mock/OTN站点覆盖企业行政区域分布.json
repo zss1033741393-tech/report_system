@@ -1,0 +1,27 @@
+{
+  "data_type": "BAR_CHART",
+  "title": "OTN站点覆盖企业行政区域分布",
+  "data": [
+    {
+      "category": "武鸣区",
+      "value": 72
+    },
+    {
+      "category": "良庆区",
+      "value": 59
+    },
+    {
+      "category": "江南区",
+      "value": 46
+    },
+    {
+      "category": "邕宁区",
+      "value": 44
+    }
+  ],
+  "params_used": {},
+  "metric_values": {
+    "covered_district_distribution": "武鸣区(72家)、良庆区(59家)、江南区(46家)",
+    "top_covered_district": "武鸣区"
+  }
+}
