@@ -431,6 +431,11 @@ async def _persist_skill(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[di
         yield {"result": SkillResult(False, "skill-factory 执行器未加载")}
         return
 
+    # persist_only 前：将 inject_params 写入 SQLite 的最新大纲 params 同步到 Redis 缓存。
+    # preview_only 阶段缓存的 fc 含默认 params，inject_params 只更新 SQLite 不更新缓存，
+    # 不同步则 SkillPersist 写 indicators.json 时使用旧默认值。
+    await _sync_injected_params_to_skill_cache(tool_ctx, context_key)
+
     skill_ctx = SkillContext(
         session_id=tool_ctx.session_id,
         user_message="",
@@ -445,6 +450,69 @@ async def _persist_skill(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[di
             yield {"sse": item}
 
     yield {"result": result or SkillResult(False, "能力沉淀失败")}
+
+
+async def _sync_injected_params_to_skill_cache(tool_ctx: ToolContext, context_key: str) -> None:
+    """将 chat_history（SQLite）中最新的大纲 params 同步到 skill_factory_ctx Redis 缓存。
+
+    inject_params 执行后只更新 SQLite 的 outline_json.paragraph.params，不更新
+    preview_only 阶段写入的 skill_factory_ctx Redis 缓存。此函数在 persist_only 执行前
+    补偿这个同步缺口，确保 indicators.json 中写入的是用户最终确认的参数值。
+    """
+    try:
+        cache_key = f"skill_factory_ctx:{context_key}"
+        cached = await tool_ctx.session_service.redis.get(cache_key)
+        if not cached:
+            return
+
+        fc_dict = json.loads(cached)
+        bindings = fc_dict.get("bindings", [])
+        if not bindings:
+            return
+
+        # 读取 SQLite 中 inject_params 更新后的最新大纲
+        state = await tool_ctx.chat_history.get_outline_state(tool_ctx.session_id)
+        if not state or not state.get("outline_json"):
+            return
+
+        live_outline = state["outline_json"]
+
+        # 构建 node_id → 节点快查表
+        node_map: dict = {}
+        _collect_node_map(live_outline, node_map)
+
+        # 将最新 params 覆写到缓存的 bindings（只改 params，其余字段不变）
+        updated = False
+        for binding in bindings:
+            node_id = binding.get("node_id", "")
+            live_node = node_map.get(node_id)
+            if not live_node:
+                continue
+            live_params = live_node.get("paragraph", {}).get("params", {})
+            if live_params:
+                binding.setdefault("paragraph", {})["params"] = live_params
+                updated = True
+
+        if updated:
+            # outline_json 一并更新，保持 outline.json 与 indicators.json 一致
+            fc_dict["outline_json"] = live_outline
+            await tool_ctx.session_service.redis.setex(
+                cache_key, 3600, json.dumps(fc_dict, ensure_ascii=False)
+            )
+            logger.info(
+                f"_sync_injected_params_to_skill_cache: 已同步注入参数到沉淀缓存 "
+                f"session={tool_ctx.session_id} bindings_updated={sum(1 for b in bindings if node_map.get(b.get('node_id', '')))}"
+            )
+    except Exception as e:
+        logger.warning(f"同步注入参数到沉淀缓存失败（继续沉淀，params 可能为默认值）: {e}")
+
+
+def _collect_node_map(node: dict, result: dict) -> None:
+    """递归构建 {node_id: node_dict} 映射，供 params 快速查找。"""
+    if node_id := node.get("id"):
+        result[node_id] = node
+    for child in node.get("children", []):
+        _collect_node_map(child, result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
