@@ -76,9 +76,19 @@ error, done
 ## 开发规范
 
 ### 代码风格
-- Python：遵循 PEP8，使用 `async/await`，类型注解可选但建议
-- Vue：Composition API + `<script setup>`，composable 按功能拆分
-- 注释：中文（项目面向中文用户），复杂逻辑才加注释
+
+**Python**
+- 遵循 PEP8，使用 `async/await`，类型注解可选但建议
+- 注释用中文，复杂逻辑才加注释
+
+**Vue / JavaScript**
+- Composition API + `<script setup>`，composable 按功能拆分
+- 每个 `ref` / `const` / `let` 独占一行，禁止逗号连写多个声明
+- 每条语句独占一行，禁止用分号将多条语句堆在同一行
+- 运算符、关键字前后保留空格：`a === b`、`if (x)`、`{ key: val }`
+- Template 中每个组件属性独占一行（超过 1 个属性时）
+- CSS 每条规则独占一行，禁止将多条声明写在同一行（如 `.cls{a:1;b:2;c:3}`）
+- 数组 / 对象字面量超过 2 项时换行书写
 
 ### 测试规范
 - 框架：`pytest` + `pytest-asyncio`（asyncio_mode = auto）
