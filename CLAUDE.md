@@ -21,14 +21,15 @@ report_system/
 │   │   ├── lead_agent.py       # 入口：构建 prompt + 调 ReAct 引擎
 │   │   ├── react_engine.py     # SimpleReActEngine：LLM 自驱工具调用循环
 │   │   ├── tool_registry.py    # 工具注册 / 执行
-│   │   ├── tool_definitions.py # 12 个工具 schema + 函数
+│   │   ├── tool_definitions.py # 工具 schema + 函数（search_skill / inject_params 等）
 │   │   ├── loop_detector.py    # 循环检测（warn/stop）
 │   │   └── context_compressor.py # 长上下文压缩
 │   ├── llm/            # LLMService（流式 + function calling）
 │   ├── pipeline/       # FAISSRetriever, Neo4jRetriever
 │   ├── services/       # ChatHistoryService, SessionService, EmbeddingService
 │   ├── skills/
-│   │   ├── builtin/    # 内置技能（每个目录含 SKILL.md + scripts/）
+│   │   ├── builtin/    # 内置技能（outline-generate / param-inject / skill-factory 等）
+│   │   │   └── */scripts/  # 各技能执行器（GraphRAGExecutor / SkillFactoryExecutor 等）
 │   │   └── custom/     # 用户自定义技能（Git 忽略）
 │   ├── routers/        # FastAPI 路由：chat / skills / memory
 │   ├── tests/          # 所有测试（pytest），在 backend/ 下
@@ -40,10 +41,10 @@ report_system/
 │   └── config.py       # Settings（pydantic BaseSettings）
 └── frontend/
     └── src/
-        ├── components/ # Vue 组件
+        ├── components/ # Vue 组件（AnchorConfirm / RightPanel 等）
         ├── composables/ # useConversation 等
         ├── utils/sse.js # SSE 事件处理 + API 封装
-        └── views/      # MainView 等页面
+        └── views/      # MainView / OutlineView 等页面
 ```
 
 ## 核心架构规范
@@ -62,19 +63,14 @@ report_system/
 ### SSE 事件规范
 已有事件类型，**只能新增，不可重命名/删除**：
 ```
-chat_reply, thinking_step, outline_chunk, outline_done,
-report_chunk, report_done, data_executing, data_done,
-error, done, tool_call, tool_result
-```
-
-### 不变边界（严禁修改）
-```
-backend/skills/builtin/*/scripts/*.py
-backend/services/chat_history.py
-backend/services/data/
-backend/agent/skill_registry.py
-backend/agent/context.py
-backend/agent/skill_loader.py
+chat_reply, thinking_step, thinking_complete,
+tool_call, tool_result,
+outline_chunk, outline_done, outline_updated, outline_clipped,
+report_chunk, report_done,
+design_step, persist_prompt, skill_persisted, skill_factory_done,
+data_executing, data_executed,
+awaiting_confirm, confirm_required,
+error, done
 ```
 
 ## 开发规范
@@ -94,7 +90,7 @@ backend/agent/skill_loader.py
 - 运行：`cd backend && pytest tests/ -v`
 
 ### Git 规范
-- 开发分支：`claude/add-github-copilot-mcp-zLgYT`
+- 开发分支：`claude/configure-git-pat-02FTx`
 - 提交信息：中文描述，简明扼要
 - **push 规则（重要）**：
   - 必须使用 `git push -u origin <branch>` 通过 PAT URL 直接推送
