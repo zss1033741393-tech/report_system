@@ -1,4 +1,4 @@
-"""Sub-Step 6：能力沉淀——写文件系统 + Neo4j + FAISS。"""
+"""Sub-Step 6：能力沉淀——写文件系统 + Neo4j。"""
 import json, logging, os
 from typing import AsyncGenerator
 from sub_skills.base import SubSkillBase
@@ -14,8 +14,18 @@ class SkillPersist(SubSkillBase):
     async def execute(self, fc: SkillFactoryContext, ctx: SkillContext) -> AsyncGenerator[str, None]:
         # 1. 写文件系统
         base_dir = f"skills/custom/{fc.skill_name}"
-        skill_dir = _resolve_versioned_dir(base_dir)
+        skill_dir, version, is_new_version = _resolve_versioned_dir(base_dir)
         os.makedirs(f"{skill_dir}/references", exist_ok=True)
+
+        # 如果目录已存在（重名），同步更新 fc 中的名称和版本，保证后续所有步骤一致
+        original_skill_name = fc.skill_name
+        if is_new_version:
+            fc.skill_name = f"{original_skill_name}_v{version}"
+            fc.version = version
+            logger.info(
+                f"SkillPersist: 检测到重名 skill '{original_skill_name}'，"
+                f"自动创建新版本 '{fc.skill_name}' → {skill_dir}"
+            )
 
         skill_md = f"""---
 name: {fc.skill_name}
@@ -75,14 +85,23 @@ enabled: true
             await self._svc.neo4j.create_nodes_and_relations(fc.new_nodes)
 
         yield sse_event("skill_persisted", {
-            "skill_name": fc.skill_name, "skill_dir": skill_dir, "version": fc.version,
+            "skill_name": fc.skill_name,
+            "skill_dir": skill_dir,
+            "version": fc.version,
+            "is_new_version": is_new_version,
+            "original_name": original_skill_name,
         })
 
 
-def _resolve_versioned_dir(base_dir: str) -> str:
+def _resolve_versioned_dir(base_dir: str) -> tuple:
+    """返回 (实际目录路径, 版本号, 是否为新版本)。
+
+    首次创建：返回 (base_dir, 1, False)。
+    重名时递增版本：返回 (base_dir_vN, N, True)，N 从 2 开始。
+    """
     if not os.path.exists(base_dir):
-        return base_dir
+        return base_dir, 1, False
     v = 2
     while os.path.exists(f"{base_dir}_v{v}"):
         v += 1
-    return f"{base_dir}_v{v}"
+    return f"{base_dir}_v{v}", v, True

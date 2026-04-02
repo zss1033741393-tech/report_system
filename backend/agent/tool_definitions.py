@@ -477,6 +477,14 @@ async def _persist_skill(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[di
         elif isinstance(item, str):
             yield {"sse": item}
 
+    # 沉淀成功后热重载 custom skill 注册表，新 skill 立即对 skill_router 可见
+    if result and result.success:
+        try:
+            tool_ctx.registry.reload_custom_skills()
+            logger.info(f"persist_skill: custom skills 热重载完成 skill_name={result.data.get('skill_name', '')}")
+        except Exception as e:
+            logger.warning(f"persist_skill: custom skills 热重载失败（可忽略）: {e}")
+
     yield {"result": result or SkillResult(False, "能力沉淀失败")}
 
 
