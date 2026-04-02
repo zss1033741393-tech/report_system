@@ -48,6 +48,12 @@
           <ChatMessage v-if="streamReply" :msg="{role:'assistant',content:streamReply,msg_type:'text',created_at:new Date().toISOString()}" />
         </div>
       </div>
+      <SkillCandidates
+        v-if="showSkillPicker && skillCandidates.length"
+        :candidates="skillCandidates"
+        @select="onSkillSelect"
+        @fallback="onSkillFallback"
+      />
       <QueryInput :loading="loading" @send="send" />
     </section>
     <div v-if="!showRight && (hasOutline || hasReport)" class="edge-tab" @click="showRight=true">
@@ -81,18 +87,27 @@ import ToolCallBlock from '../components/ToolCallBlock.vue'
 import MemoryPanel from '../components/MemoryPanel.vue'
 import SkillsManager from '../components/SkillsManager.vue'
 import AnchorConfirm from '../components/AnchorConfirm.vue'
+import SkillCandidates from '../components/SkillCandidates.vue'
 import { sendMessage, fetchSessions, deleteSession, fetchArtifacts } from '../utils/sse.js'
 import { useConversation } from '../composables/useConversation.js'
 
 const conv = useConversation()
 
-const sessions = ref([]), sid = ref(''), loading = ref(false)
-const outLoading = ref(false), streamReply = ref('')
-const confirmVisible = ref(false), confirmData = ref(null)
+const sessions = ref([])
+const sid = ref('')
+const loading = ref(false)
+const outLoading = ref(false)
+const streamReply = ref('')
+const confirmVisible = ref(false)
+const confirmData = ref(null)
 const reportLoading = ref(false)
-const msgsCtn = ref(null), showRight = ref(false)
-const thinkSteps = ref([]), designSteps = ref([])
+const msgsCtn = ref(null)
+const showRight = ref(false)
+const thinkSteps = ref([])
+const designSteps = ref([])
 const sideTab = ref('sessions')
+const skillCandidates = ref([])
+const showSkillPicker = ref(false)
 let ctrl = null
 
 const hasOutline = computed(() => !!conv.outline.value)
@@ -140,6 +155,7 @@ function send(text) {
   conv.addMessage({ _tid: Date.now(), role: 'user', content: text, msg_type: 'text', created_at: new Date().toISOString() })
   scroll(); loading.value = true; streamReply.value = ''; outLoading.value = false; reportLoading.value = false
   thinkSteps.value = []; designSteps.value = []; conv.clearToolCalls()
+  showSkillPicker.value = false; skillCandidates.value = []
   let outStarted = false, reportStarted = false, compThinking = null, outMdSnap = ''
   ctrl = sendMessage(sid.value, text, {
     onThinkingStep(d) {
@@ -206,6 +222,15 @@ function send(text) {
         msg_type: 'text', created_at: new Date().toISOString() })
     },
     onDataExecuting() {}, onDataExecuted() {},
+    onSkillCandidates(d) {
+      skillCandidates.value = d.candidates || []
+      showSkillPicker.value = skillCandidates.value.length > 0
+      scroll()
+    },
+    onSkillSelected() {
+      showSkillPicker.value = false
+      skillCandidates.value = []
+    },
     onConfirmRequired(d) { confirmData.value = d; confirmVisible.value = true },
     onError(m) {
       streamReply.value = ''
@@ -237,6 +262,18 @@ function send(text) {
       }
     }
   })
+}
+
+function onSkillSelect(candidate) {
+  showSkillPicker.value = false
+  skillCandidates.value = []
+  send(candidate.label)
+}
+
+function onSkillFallback() {
+  showSkillPicker.value = false
+  skillCandidates.value = []
+  send('不需要已有能力，直接搜索知识库')
 }
 
 function onAnchorConfirm(nodeId) {

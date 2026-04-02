@@ -98,3 +98,11 @@ scenarios:
     model: "qwen3.5-27b"
     temperature: 0.2
     max_tokens: 4096
+
+  skill_router:
+    model: "qwen3.5-27b"
+    temperature: 0.1
+    max_tokens: 500
+    response_format: "json"
+    extra_payload:
+      enable_thinking: false

@@ -82,6 +82,7 @@ report_chunk, report_done,
 design_step, persist_prompt, skill_persisted, skill_factory_done,
 data_executing, data_executed,
 awaiting_confirm, confirm_required,
+skill_candidates, skill_selected,
 error, done
 ```
 

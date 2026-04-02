@@ -40,45 +40,9 @@ class GraphRAGExecutor:
         query = ctx.params.get("query", ctx.user_message)
         sid = ctx.session_id; trace = TraceLogger(session_id=sid).child("skill.outline_generate")
 
-        # Step 0: Skill 库优先匹配（已沉淀的看网能力）
-        yield _ts("skill_match","running","正在检索已沉淀的看网能力...")
-        trace.start_timer("s0")
-        qe = await self._emb.get_embedding(query)
-        skill_matches = self._faiss.search_skill(qe, top_k=20, threshold=0.7)
-        trace.log_timed("s0","s0")
-
-        skill_loaded = False
-        if skill_matches:
-            for match in skill_matches:
-                yield _ts("skill_match","done",f"尝试加载: {match.skill_dir} (score={match.score:.2f})")
-                loaded = self._load_skill_outline(match.skill_dir)
-                if loaded:
-                    outline_json, outline_md = loaded
-                    # 合并 paragraph（Skill 专属 indicators.json 优先）
-                    self._merge_paragraph(outline_json, skill_dir=match.skill_dir)
-                    ai = {"name": outline_json.get("name",""), "level": outline_json.get("level",2), "skill_dir": match.skill_dir}
-                    yield json.dumps({"type":"outline_chunk","content":outline_md}, ensure_ascii=False)
-                    yield json.dumps({"type":"outline_done","anchor":ai}, ensure_ascii=False)
-                    yield _ts("outline_render","done",f"从已沉淀能力加载大纲: {match.skill_dir}")
-                    yield SkillResult(True, f"已加载沉淀能力的大纲",
-                                      data={"subtree":outline_json,"anchor":ai,"outline_md":outline_md,
-                                            "skill_dir":match.skill_dir,"from_skill":True})
-                    skill_loaded = True
-                    break
-                else:
-                    logger.warning(f"Skill {match.skill_dir} 大纲文件缺失，尝试下一个")
-
-        if skill_loaded:
-            return
-
-        if skill_matches:
-            yield _ts("skill_match","done","所有匹配的 Skill 大纲文件均缺失，回退到 GraphRAG")
-        else:
-            yield _ts("skill_match","done","未命中已沉淀能力，使用 GraphRAG 检索")
-
-        # Step 1: Embedding（Step 0 已算过 qe，复用）
+        # Step 1: Embedding
         yield _ts("embedding","running","正在转换语义向量..."); trace.start_timer("s1")
-        # qe 已在 Step 0 计算，无需重复
+        qe = await self._emb.get_embedding(query)
         trace.log_timed("s1","s1")
         yield _ts("embedding","done","语义向量完成")
 
@@ -137,7 +101,7 @@ class GraphRAGExecutor:
                 yield _ts("condition_filter","done",f"裁剪完成，保留 {remaining} 个节点")
 
         # Step 6.8: 合并 paragraph 到 L5 节点
-        self._merge_paragraph(subtree, skill_dir="")
+        self.merge_paragraph(subtree, skill_dir="")
 
         # Step 7: 渲染大纲
         yield _ts("outline_render","running","正在生成大纲..."); trace.start_timer("s7"); chunks=[]
@@ -158,7 +122,7 @@ class GraphRAGExecutor:
         subtree = await self._neo4j.get_subtree(node_id)
         if not subtree: yield _ts("subtree_fetch","done","空"); yield SkillResult(False,"子树为空"); return
         yield _ts("subtree_fetch","done","完成")
-        self._merge_paragraph(subtree, skill_dir="")
+        self.merge_paragraph(subtree, skill_dir="")
         anchor = {"selected_id":ni["id"],"selected_name":ni["name"],"level":ni["level"]}
         yield _ts("outline_render","running","生成大纲..."); chunks=[]
         async for c in self._render.render_stream(subtree, anchor):
@@ -257,13 +221,13 @@ class GraphRAGExecutor:
             count += GraphRAGExecutor._count_children(c)
         return count
 
-    def _merge_paragraph(self, node: dict, skill_dir: str = "") -> None:
+    def merge_paragraph(self, node: dict, skill_dir: str = "") -> None:
         """遍历大纲所有 L5 节点，从 IndicatorResolver 读取 paragraph 并写入节点。"""
         if not self._indicator_resolver:
             return
-        self._merge_paragraph_node(node, skill_dir)
+        self.merge_paragraph_node(node, skill_dir)
 
-    def _merge_paragraph_node(self, node: dict, skill_dir: str) -> None:
+    def merge_paragraph_node(self, node: dict, skill_dir: str) -> None:
         if node.get("level") == 5:
             if "paragraph" not in node:
                 node["paragraph"] = self._indicator_resolver.resolve(
@@ -272,10 +236,10 @@ class GraphRAGExecutor:
                     skill_dir=skill_dir,
                 )
         for child in node.get("children", []):
-            self._merge_paragraph_node(child, skill_dir)
+            self.merge_paragraph_node(child, skill_dir)
 
     @staticmethod
-    def _load_skill_outline(skill_dir: str):
+    def load_skill_outline(skill_dir: str):
         """从文件系统加载已沉淀 Skill 的大纲。返回 (outline_json, outline_md) 或 None。"""
         import os
         outline_path = os.path.join(skill_dir, "references", "outline.json")

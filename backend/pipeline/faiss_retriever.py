@@ -6,11 +6,6 @@ logger = logging.getLogger(__name__)
 class EntityNode:
     neo4j_id: str; name: str; level: int; score: float
 
-@dataclass
-class SkillMatch:
-    """Skill 匹配结果。"""
-    skill_dir: str; score: float
-
 class FAISSRetriever:
     def __init__(self, dim=1024):
         self.dim = dim; self.index = faiss.IndexFlatIP(dim); self.id_map = []
@@ -47,27 +42,6 @@ class FAISSRetriever:
         return [EntityNode(neo4j_id=self.id_map[i]["neo4j_id"], name=self.id_map[i]["name"],
                 level=self.id_map[i]["level"], score=float(s))
                 for s, i in zip(scores[0], indices[0]) if i != -1 and s >= threshold]
-
-    def search_skill(self, qe, top_k=20, threshold=0.7) -> list[SkillMatch]:
-        """
-        Skill 库检索。从 top_k 个候选中筛选出有 skill_dir 的条目。
-        top_k 要足够大（默认 20），因为 KB 节点和 Skill 向量混在同一个索引里。
-        """
-        if not self.index or self.index.ntotal == 0:
-            return []
-        actual_k = min(top_k, self.index.ntotal)
-        scores, indices = self.index.search(qe, actual_k)
-        results = []
-        seen_dirs = set()
-        for s, i in zip(scores[0], indices[0]):
-            if i == -1 or s < threshold:
-                continue
-            entry = self.id_map[i]
-            sd = entry.get("skill_dir")
-            if sd and sd not in seen_dirs:
-                results.append(SkillMatch(skill_dir=sd, score=float(s)))
-                seen_dirs.add(sd)
-        return results
 
     @property
     def total(self): return self.index.ntotal if self.index else 0

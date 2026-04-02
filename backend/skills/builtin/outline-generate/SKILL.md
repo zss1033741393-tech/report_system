@@ -1,7 +1,7 @@
 ---
 name: outline-generate
 display_name: 大纲生成
-description: 先检索已沉淀 Skill（Step 0），命中则直接加载大纲；未命中走 GraphRAG 流程生成临时大纲，支持条件裁剪
+description: 通过 GraphRAG 流程生成分析大纲，支持条件裁剪。已沉淀能力由 skill_router 工具提前路由，本工具专注于 GraphRAG 检索生成
 enabled: true
 params:
   query:
@@ -31,9 +31,6 @@ executor:
 
 ## 工具调用：search_skill(query)
 这是运行态大纲生成的统一入口，内部自动执行以下 7 步流程：
-
-**Step 0：Skill 库优先匹配**
-FAISS 检索已沉淀的看网能力（score > 0.7），命中则直接加载预设大纲。
 
 **Step 1-2：语义检索**
 用户查询向量化 → FAISS 搜索知识库（top_k=10, threshold=0.5），返回候选节点。

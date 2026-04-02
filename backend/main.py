@@ -111,6 +111,7 @@ async def lifespan(app: FastAPI):
     # ─── 3. Skill 体系：扫描 + 自动加载执行器 ───
     registry = SkillRegistry("./skills")
     registry.scan()
+    container.register("skill_registry", registry)
 
     loader = SkillLoader(registry)
     loader.auto_load_all(container)

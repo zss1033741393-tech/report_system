@@ -74,17 +74,6 @@ enabled: true
         if fc.new_nodes:
             await self._svc.neo4j.create_nodes_and_relations(fc.new_nodes)
 
-        # 3. FAISS：增量写入 + 持久化
-        if fc.query_variants:
-            import numpy as np
-            from config import settings
-            embs = await self._svc.embedding.get_embeddings_batch(fc.query_variants)
-            entities = [{"skill_dir": skill_dir, "name": fc.skill_name, "level": 0, "neo4j_id": ""}
-                        for _ in fc.query_variants]
-            self._svc.faiss.add_batch(embs, entities)
-            self._svc.faiss.save(settings.FAISS_INDEX_PATH, settings.FAISS_ID_MAP_PATH)
-            logger.info(f"FAISS 持久化: {self._svc.faiss.total} 向量")
-
         yield sse_event("skill_persisted", {
             "skill_name": fc.skill_name, "skill_dir": skill_dir, "version": fc.version,
         })

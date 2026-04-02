@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # ─── Skill 匹配（运行态） ───
     SKILL_MATCH_THRESHOLD: float = 0.7
 
+    # ─── Skill 路由 ───
+    SKILL_ROUTER_ENABLED: bool = True
+
     # ─── ReAct 引擎 ───
     REACT_MAX_STEPS: int = 15
 

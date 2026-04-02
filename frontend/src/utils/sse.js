@@ -39,6 +39,8 @@ export function sendMessage(sid, message, cb) {
             case 'confirm_required': cb.onConfirmRequired?.(d); break
             case 'report_patch': cb.onReportPatch?.(d); break
             case 'report_rollback': cb.onReportRollback?.(d); break
+            case 'skill_candidates': cb.onSkillCandidates?.(d); break
+            case 'skill_selected': cb.onSkillSelected?.(d); break
             case 'error': cb.onError?.(d.message); break
             case 'done': cb.onDone?.(); break
           }

@@ -28,6 +28,67 @@ from utils.trace_logger import TraceLogger
 
 logger = logging.getLogger(__name__)
 
+
+def _match_skill_selection(message: str, candidates: list) -> dict:
+    """从用户消息中匹配选择的 skill candidate。
+    匹配顺序：字母选项（A-E）→ display_name 包含匹配 → skill_id 匹配 → bigram 关键词匹配。
+    返回匹配的 candidate dict，无匹配返回 None。
+    """
+    if not candidates:
+        return None
+
+    msg = message.strip()
+
+    # 字母选项（A/B/C/D/E，大小写不敏感）
+    import re
+    letter_match = re.match(r'^([A-Ea-e])\s*[.。、]?$', msg)
+    if letter_match:
+        label = letter_match.group(1).upper()
+        for c in candidates:
+            if c.get("label", "") == label:
+                return c
+
+    # display_name 包含匹配（用户输入了能力名称的一部分）
+    msg_lower = msg.lower()
+    for c in candidates:
+        name = c.get("display_name", "")
+        if name and name in msg:
+            return c
+
+    # skill_id 直接匹配
+    for c in candidates:
+        if c.get("skill_id", "") in msg:
+            return c
+
+    # bigram 关键词匹配（中文 2-gram）
+    zh_bigrams = set()
+    for i in range(len(msg) - 1):
+        if '\u4e00' <= msg[i] <= '\u9fff' and '\u4e00' <= msg[i + 1] <= '\u9fff':
+            zh_bigrams.add(msg[i:i + 2])
+
+    best_score = 0
+    best_cand = None
+    for c in candidates:
+        name = c.get("display_name", "")
+        score = sum(1 for i in range(len(name) - 1)
+                    if '\u4e00' <= name[i] <= '\u9fff' and '\u4e00' <= name[i + 1] <= '\u9fff'
+                    and name[i:i + 2] in zh_bigrams)
+        if score > best_score:
+            best_score = score
+            best_cand = c
+
+    if best_score >= 2:
+        return best_cand
+
+    return None
+
+
+def _is_fallback_selection(message: str, candidates: list) -> bool:
+    """检测用户是否选择了 fallback 选项（不需要已有能力，直接搜索）。"""
+    fallback_kws = ["不需要", "其他", "直接搜索", "重新搜索", "没有合适", "都不对", "都不符合"]
+    return any(kw in message for kw in fallback_kws)
+
+
 # ─── System Prompt 基础指令 ───
 BASE_INSTRUCTIONS = """\
 你是智能看网报告助手。帮助用户生成网络分析大纲和报告，并支持专家将看网逻辑固化为可复用能力。
@@ -64,7 +125,7 @@ BASE_INSTRUCTIONS = """\
 
 ### 当 has_outline=false（会话无大纲）时：
 - 用户输入超过 80 字的看网逻辑文本（描述分析经验/规则）→ understand_intent(expert_input)，完成后停止等待用户指示
-- 用户询问网络分析/评估（短句） → search_skill(query)，完成后展示大纲并询问是否生成报告
+- 用户询问网络分析/评估（短句）→ 先调 skill_router(query) 检索已沉淀能力；若有候选则等待用户选择；若无候选则直接调 search_skill(query)
 
 ## 关键约束【严格遵守，不得违反】
 - 【禁止】search_skill 完成后自动调用 execute_data/render_report，必须先询问用户
@@ -120,11 +181,8 @@ class LeadAgent:
         self._skill_system_prompt = self._build_skill_system_prompt()
 
     def _build_skill_system_prompt(self) -> str:
-        """生成 <skill_system> 块，列出所有已启用技能的路径和描述。"""
-        enabled = [s for s in self._reg.get_enabled() if s.source == "builtin"]
-        # 也包含 custom skills
-        custom = [s for s in self._reg.get_enabled() if s.source == "custom"]
-        all_skills = enabled + custom
+        """生成 <skill_system> 块，只列出 builtin 技能（custom skill 通过 skill_router 动态路由）。"""
+        all_skills = [s for s in self._reg.get_enabled() if s.source == "builtin"]
 
         entries = []
         for s in all_skills:
@@ -190,6 +248,25 @@ class LeadAgent:
                     return
             # 新任务指令 或 确认匹配失败：清理 pending，继续正常 ReAct 流程
             await self._ss.delete_pending_confirm(ctx.session_id)
+
+        # ─── 检查 skill_candidates（上一轮 skill_router 推送的候选列表）───
+        skill_cands = await self._ss.get_skill_candidates(session_id)
+        if skill_cands and not self._is_new_task(user_message):
+            candidates = skill_cands.get("candidates", [])
+            matched = _match_skill_selection(user_message, candidates)
+            if matched:
+                await self._ss.delete_skill_candidates(session_id)
+                async for ev in self._load_selected_skill(session_id, matched, trace_cb):
+                    yield ev
+                yield self._ev("done")
+                return
+            elif _is_fallback_selection(user_message, candidates):
+                # 用户选择"其他/不需要/直接搜索"
+                await self._ss.delete_skill_candidates(session_id)
+                # 继续正常 ReAct 流程，不拦截
+            # 其他情况（用户重新描述需求等）：清理候选，继续 ReAct
+            else:
+                await self._ss.delete_skill_candidates(session_id)
 
         # Memory 注入已禁用：跨会话污染风险高于收益，保留代码结构便于日后重新启用
         system_prompt = self._build_system_prompt("")
@@ -285,9 +362,61 @@ class LeadAgent:
         yield self._ev("done")
 
     def _is_new_task(self, message: str) -> bool:
-        """判断用户消息是否为新任务指令（而非 L5 确认回复）。"""
-        new_task_kws = ["帮我分析", "帮我看", "帮我评估", "生成报告", "删除", "保存", "沉淀", "阈值改为"]
+        """判断用户消息是否为新任务指令（而非 L5/skill 确认回复）。"""
+        new_task_kws = ["帮我分析", "帮我看", "帮我评估", "生成报告", "删除", "保存", "沉淀", "阈值改为", "分析", "评估"]
         return any(kw in message for kw in new_task_kws)
+
+    async def _load_selected_skill(self, session_id: str, candidate: dict, trace_cb=None) -> None:
+        """用户选择了某个 skill candidate，直接加载其大纲。"""
+        from agent.context import SkillResult
+        skill_dir = candidate.get("skill_dir", "")
+        display_name = candidate.get("display_name", skill_dir)
+
+        yield self._ev("skill_selected", skill_id=candidate.get("skill_id"), display_name=display_name)
+        yield self._ev("chat_reply", content=f"正在加载「{display_name}」的大纲...")
+
+        executor = self._loader.get_executor("outline-generate")
+        if not executor or not hasattr(executor, "load_skill_outline"):
+            yield self._ev("chat_reply", content="大纲加载器未就绪，请稍后再试。")
+            return
+
+        loaded = executor.load_skill_outline(skill_dir)
+        if not loaded:
+            # 大纲文件缺失，回退到 search_skill GraphRAG 流程
+            yield self._ev("thinking_step", step="skill_load", status="done",
+                           detail=f"Skill 大纲文件缺失，回退 GraphRAG: {skill_dir}")
+            query = candidate.get("display_name", "")
+            skill_ctx = SkillContext(
+                session_id=session_id,
+                user_message=query,
+                params={"query": query},
+                trace_callback=trace_cb,
+            )
+            result = None
+            async for item in executor.execute(skill_ctx):
+                if isinstance(item, SkillResult):
+                    result = item
+                    if result.success:
+                        subtree = result.data.get("subtree")
+                        if subtree:
+                            anchor = result.data.get("anchor") or {}
+                            await self._ch.save_outline_state(session_id, subtree, anchor)
+                elif isinstance(item, str):
+                    yield item
+            if result and result.success:
+                yield self._ev("chat_reply", content="大纲已生成，请查看右侧面板。\n\n是否立即生成报告？")
+            return
+
+        outline_json, outline_md = loaded
+        executor.merge_paragraph(outline_json, skill_dir=skill_dir)
+        anchor_info = {"name": outline_json.get("name", ""), "level": outline_json.get("level", 2),
+                       "skill_dir": skill_dir}
+        await self._ch.save_outline_state(session_id, outline_json, anchor_info)
+
+        yield json.dumps({"type": "outline_chunk", "content": outline_md}, ensure_ascii=False)
+        yield json.dumps({"type": "outline_done", "anchor": anchor_info}, ensure_ascii=False)
+        yield self._ev("outline_updated", outline_json=outline_json)
+        yield self._ev("chat_reply", content=f"已加载「{display_name}」的大纲，请查看右侧面板。\n\n是否立即生成报告？")
 
     async def _confirm(self, ctx: AgentContext, user_message: str, trace_cb=None) -> AsyncGenerator[str, None]:
         """处理 L5 层级确认。"""
