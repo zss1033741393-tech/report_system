@@ -71,7 +71,9 @@ class SkillRouterExecutor:
                           "detail": f"找到 {len(skill_metas)} 个已沉淀能力，正在 LLM 精排..."}, ensure_ascii=False)
 
         # Step 2: LLM 精排
-        matched_ids = await self._llm_select_skills(query, skill_metas)
+        matched_ids = await self._llm_select_skills(
+            query, skill_metas, trace_callback=ctx.trace_callback
+        )
 
         # Step 3: 构建候选列表
         meta_map = {m["skill_id"]: m for m in skill_metas}
@@ -109,9 +111,11 @@ class SkillRouterExecutor:
         yield SkillResult(True, f"路由完成，{len(candidates)} 个候选",
                           data={"candidates": candidates, "query": query})
 
-    async def _llm_select_skills(self, query: str, skill_metas: list) -> list:
-        """独立 LLM 调用精排 Skill，不污染主 Agent 上下文。"""
+    async def _llm_select_skills(self, query: str, skill_metas: list,
+                                  trace_callback=None) -> list:
+        """独立 LLM 调用精排 Skill，通过 AgentLLM 记录到 llm_traces。"""
         from llm.config import SKILL_ROUTER_CONFIG
+        from llm.agent_llm import AgentLLM
 
         # 构建能力列表文本
         lines = []
@@ -130,28 +134,16 @@ class SkillRouterExecutor:
         skill_list_text = "\n\n".join(lines)
         user_msg = f"## 用户需求\n{query}\n\n## 已沉淀看网能力列表\n{skill_list_text}"
 
-        messages = [
-            {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-            {"role": "user", "content": user_msg},
-        ]
-
         try:
-            result_text = ""
-            async for chunk in self._llm.stream_chat(
-                messages=messages,
-                model=SKILL_ROUTER_CONFIG.model,
-                temperature=SKILL_ROUTER_CONFIG.temperature,
-                max_tokens=SKILL_ROUTER_CONFIG.max_tokens,
-                response_format=SKILL_ROUTER_CONFIG.response_format,
-                extra_payload=SKILL_ROUTER_CONFIG.extra_payload,
-            ):
-                result_text += chunk
-
-            # 解析 JSON
-            m = re.search(r"```json\s*(.*?)\s*```", result_text, re.DOTALL)
-            if m:
-                result_text = m.group(1)
-            data = json.loads(result_text)
+            agent = AgentLLM(
+                self._llm,
+                system_prompt=ROUTER_SYSTEM_PROMPT,
+                config=SKILL_ROUTER_CONFIG,
+                trace_callback=trace_callback,
+                llm_type="skill_router",
+                step_name="skill_router_select",
+            )
+            data = await agent.chat_json(user_msg)
             return data.get("matches", [])
         except Exception as e:
             logger.warning(f"skill_router LLM 精排失败，返回空候选: {e}")

@@ -70,7 +70,16 @@ class SkillRegistry:
                 meta.source = src
                 if not meta.name:
                     meta.name = entry
-                self._skills[meta.name] = meta
+                # 名称冲突时（同名但不同目录）使用目录名作为 key，避免覆盖
+                key = meta.name
+                if key in self._skills and self._skills[key].skill_dir != meta.skill_dir:
+                    logger.warning(
+                        f"Skill 名称冲突: name='{key}' 已被 {self._skills[key].skill_dir} 占用，"
+                        f"{entry} 改用目录名注册"
+                    )
+                    key = entry
+                    meta.name = entry
+                self._skills[key] = meta
                 exe_info = f" → {meta.executor.cls}" if meta.executor and meta.executor.cls else " (无执行器)"
                 logger.info(f"Skill: {meta.name} ({'ON' if meta.enabled else 'OFF'}) [{src}]{exe_info}")
             except Exception as e:
