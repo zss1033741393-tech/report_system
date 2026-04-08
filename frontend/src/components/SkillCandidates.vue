@@ -14,6 +14,9 @@
         <div class="skill-card__body">
           <div class="skill-card__name">{{ c.display_name }}</div>
           <div v-if="c.scene_intro" class="skill-card__intro">{{ c.scene_intro }}</div>
+          <div v-if="c.description" class="skill-card__desc">
+            <span class="skill-card__desc-label">差异点：</span>{{ c.description }}
+          </div>
           <div v-if="c.keywords && c.keywords.length" class="skill-card__keywords">
             <span
               v-for="kw in c.keywords.slice(0, 5)"
@@ -126,6 +129,21 @@ function onFallback() {
   color: var(--c-text-secondary, #6b7280);
   margin-bottom: 4px;
   line-height: 1.4;
+}
+
+.skill-card__desc {
+  font-size: 12px;
+  color: var(--c-text, #374151);
+  background: var(--c-primary-bg, #eff6ff);
+  border-radius: 4px;
+  padding: 3px 8px;
+  margin-bottom: 4px;
+  line-height: 1.4;
+}
+
+.skill-card__desc-label {
+  color: var(--c-primary, #3b82f6);
+  font-weight: 600;
 }
 
 .skill-card__keywords {

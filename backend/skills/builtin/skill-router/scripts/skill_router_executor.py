@@ -17,14 +17,18 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 ROUTER_SYSTEM_PROMPT = """\
-你是看网能力路由专家。根据用户的分析需求，从已沉淀的看网能力列表中找出最相关的候选项。
+你是看网能力路由专家。根据用户的分析需求，从已沉淀的看网能力列表中找出最相关的候选项，并为每个候选生成简短的差异化描述帮助用户选择。
 
 ## 输出格式
 用 ```json ``` 代码块包裹，格式：
 ```json
-{"matches": ["skill_id1", "skill_id2"]}
+{"matches": [{"skill_id": "skill_id1", "description": "该方案侧重于..."}, {"skill_id": "skill_id2", "description": "该方案侧重于..."}]}
 ```
-- matches 为匹配的 skill_id 列表，最多返回 5 个，按相关度从高到低排列
+- matches 为匹配的候选列表，最多 5 个，按相关度从高到低排列
+- 每个候选包含 skill_id 和 description 两个字段
+- description 规则：
+  - 多个候选时：突出该方案与其他候选的差异点（如分析维度、侧重场景、数据来源的不同），30-50字
+  - 仅一个候选时：简要说明该能力适合的场景，30字以内
 - 若无匹配则返回空列表：{"matches": []}
 - 只输出 JSON，不要加解释文字
 """
@@ -79,10 +83,12 @@ class SkillRouterExecutor:
         meta_map = {m["skill_id"]: m for m in skill_metas}
         labels = ["A", "B", "C", "D", "E"]
         candidates = []
-        for i, sid_key in enumerate(matched_ids[:5]):
+        for i, match_item in enumerate(matched_ids[:5]):
+            sid_key = match_item.get("skill_id", "") if isinstance(match_item, dict) else match_item
             m = meta_map.get(sid_key)
             if not m:
                 continue
+            desc = match_item.get("description", "") if isinstance(match_item, dict) else ""
             candidates.append({
                 "label": labels[i],
                 "skill_id": m["skill_id"],
@@ -90,6 +96,7 @@ class SkillRouterExecutor:
                 "display_name": m.get("display_name", m["skill_id"]),
                 "scene_intro": m.get("scene_intro", ""),
                 "keywords": m.get("keywords", []),
+                "description": desc,
             })
 
         yield json.dumps({"type": "thinking_step", "step": "skill_router",
@@ -113,7 +120,7 @@ class SkillRouterExecutor:
 
     async def _llm_select_skills(self, query: str, skill_metas: list,
                                   trace_callback=None) -> list:
-        """独立 LLM 调用精排 Skill，通过 AgentLLM 记录到 llm_traces。"""
+        """独立 LLM 调用精排 Skill，返回 [{"skill_id": str, "description": str}, ...]。"""
         from llm.config import SKILL_ROUTER_CONFIG
         from llm.agent_llm import AgentLLM
 
@@ -144,7 +151,15 @@ class SkillRouterExecutor:
                 step_name="skill_router_select",
             )
             data = await agent.chat_json(user_msg)
-            return data.get("matches", [])
+            raw_matches = data.get("matches", [])
+            # 兼容旧格式：如果 matches 项是字符串，转为 dict
+            result = []
+            for item in raw_matches:
+                if isinstance(item, str):
+                    result.append({"skill_id": item, "description": ""})
+                elif isinstance(item, dict) and "skill_id" in item:
+                    result.append({"skill_id": item["skill_id"], "description": item.get("description", "")})
+            return result
         except Exception as e:
             logger.warning(f"skill_router LLM 精排失败，返回空候选: {e}")
             return []
