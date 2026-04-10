@@ -120,6 +120,10 @@ class LLMService:
         cfg = config or LLMConfig()
         use_stream = cfg.stream
 
+        # system_as_user：将 system 消息合并到第一条 user 消息（兼容不支持 system role 的模型）
+        if cfg.system_as_user:
+            messages = self._merge_system_to_user(messages)
+
         model = cfg.model or self.default_model
 
         payload = {
@@ -362,6 +366,30 @@ class LLMService:
             yield {"error": f"LLM 请求异常: {str(e)}"}
 
     # ─── 内部工具 ───
+
+    @staticmethod
+    def _merge_system_to_user(messages: list[dict]) -> list[dict]:
+        """将 system 消息合并到第一条 user 消息中，兼容不支持 system role 的模型。"""
+        if not messages or messages[0].get("role") != "system":
+            return messages
+        system_content = messages[0]["content"]
+        rest = messages[1:]
+        # 找到第一条 user 消息，将 system 内容前置
+        merged = []
+        system_injected = False
+        for msg in rest:
+            if not system_injected and msg.get("role") == "user":
+                merged.append({
+                    "role": "user",
+                    "content": f"[系统指令]\n{system_content}\n\n[用户消息]\n{msg['content']}",
+                })
+                system_injected = True
+            else:
+                merged.append(msg)
+        # 如果没有 user 消息（极端情况），将 system 作为 user 插入
+        if not system_injected:
+            merged.insert(0, {"role": "user", "content": system_content})
+        return merged
 
     def _log_reasoning(self, config, reasoning_parts):
         reasoning_text = "".join(reasoning_parts)

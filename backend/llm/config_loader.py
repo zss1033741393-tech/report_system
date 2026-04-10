@@ -70,6 +70,7 @@ class ModelDefinition:
     max_tokens: int = 16000
     stream: bool = True
     max_retry: int = 3
+    system_as_user: bool = False
     extra_payload: dict = field(default_factory=dict)
 
 
@@ -119,6 +120,7 @@ class LLMConfigLoader:
                 max_tokens=cfg.get("max_tokens", 16000),
                 stream=cfg.get("stream", True),
                 max_retry=cfg.get("max_retry", 3),
+                system_as_user=cfg.get("system_as_user", False),
                 extra_payload=cfg.get("extra_payload", {}),
             )
 
@@ -152,6 +154,7 @@ class LLMConfigLoader:
             timeout_total=provider.timeout_total,
             stream=sc.get("stream", model_def.stream if model_def else True),
             max_retry=model_def.max_retry if model_def else 3,
+            system_as_user=sc.get("system_as_user", model_def.system_as_user if model_def else False),
             extra_payload=sc.get("extra_payload", model_def.extra_payload if model_def else {}),
         )
 

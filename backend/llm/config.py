@@ -20,6 +20,7 @@ class LLMConfig:
     timeout_total: int = 660
     stream: bool = True
     max_retry: int = 3
+    system_as_user: bool = False
     extra_payload: dict = field(default_factory=dict)
 
 
