@@ -118,7 +118,8 @@ class LLMService:
         tools: list[dict] | None = None,
     ) -> AsyncGenerator[Dict, None]:
         cfg = config or LLMConfig()
-        use_stream = cfg.stream
+        # 带 tools 时强制流式：多数本地推理框架非流式不支持 function calling
+        use_stream = True if tools else cfg.stream
 
         model = cfg.model or self.default_model
 
@@ -348,6 +349,14 @@ class LLMService:
                             "arguments": args,
                         })
                     yield {"tool_calls": tool_calls}
+
+                # ── 空响应防御 ──
+                has_content = bool(content)
+                has_reasoning = bool(message.get("reasoning_content"))
+                has_tools = bool(message.get("tool_calls"))
+                if not has_content and not has_reasoning and not has_tools:
+                    logger.warning(f"LLM 非流式返回空响应: {message}")
+                    yield {"error": "LLM 返回空响应（content、reasoning_content、tool_calls 均为空）"}
 
         except Exception as e:
             logger.error(f"LLM non-stream error: {e}")

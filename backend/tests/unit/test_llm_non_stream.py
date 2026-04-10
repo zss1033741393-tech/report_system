@@ -346,3 +346,82 @@ class TestNonStreamHighLevel:
             text = await svc.complete([{"role": "user", "content": "test"}], cfg)
 
         assert text == "简短回答"
+
+
+# ─── tools 强制流式 + 空响应防御 ─────────────────────────────────────────────
+
+class TestToolsForcesStream:
+
+    @pytest.mark.asyncio
+    async def test_tools_forces_stream_true_in_payload(self):
+        """config.stream=False 但传了 tools 时，payload 中 stream 应为 True（强制流式）。"""
+        from tests.unit.test_llm_stream_parser import (
+            _make_sse_bytes, _make_delta_chunk,
+            _mock_response as _make_stream_response,
+            _MockContextManager as _StreamCtxMgr,
+        )
+        sse_events = [
+            _make_delta_chunk(index=0, tc_id="c1", name="get_session_status", arguments='{}'),
+            "[DONE]",
+        ]
+        resp = _make_stream_response(_make_sse_bytes(sse_events))
+        svc = _make_svc()
+        cfg = _non_stream_config()
+
+        tools = [{"type": "function", "function": {"name": "get_session_status",
+                                                     "parameters": {"type": "object", "properties": {}}}}]
+
+        with patch.object(svc, "_get_session") as mock_gs:
+            mock_session = MagicMock()
+            mock_session.post = MagicMock(return_value=_StreamCtxMgr(resp))
+            mock_gs.return_value = mock_session
+
+            chunks = await _collect(svc, [{"role": "user", "content": "test"}], cfg, tools=tools)
+
+        # 检查 payload 中 stream 被强制为 True
+        call_kwargs = mock_session.post.call_args
+        payload = call_kwargs[1]["json"] if "json" in call_kwargs[1] else call_kwargs[0][1]
+        assert payload["stream"] is True, "带 tools 时应强制 stream=True"
+
+        # 工具调用应正常解析
+        tc_chunks = [c for c in chunks if "tool_calls" in c]
+        assert len(tc_chunks) == 1
+        assert tc_chunks[0]["tool_calls"][0]["name"] == "get_session_status"
+
+
+class TestEmptyResponseDetection:
+
+    @pytest.mark.asyncio
+    async def test_empty_content_empty_tool_calls_yields_error(self):
+        """模型返回 content='' 且 tool_calls=[] 时 yield error 而非静默。"""
+        message = {"role": "assistant", "content": "", "tool_calls": []}
+        resp = _make_non_stream_response(message)
+        svc = _make_svc()
+        cfg = _non_stream_config()
+
+        with patch.object(svc, "_get_session") as mock_gs:
+            mock_session = MagicMock()
+            mock_session.post = MagicMock(return_value=_MockContextManager(resp))
+            mock_gs.return_value = mock_session
+
+            chunks = await _collect(svc, [{"role": "user", "content": "test"}], cfg)
+
+        assert any("error" in c for c in chunks), "空响应应 yield error"
+        assert "空响应" in chunks[0]["error"]
+
+    @pytest.mark.asyncio
+    async def test_content_none_no_tools_yields_error(self):
+        """模型返回 content=None 且无 tool_calls 时 yield error。"""
+        message = {"role": "assistant", "content": None}
+        resp = _make_non_stream_response(message)
+        svc = _make_svc()
+        cfg = _non_stream_config()
+
+        with patch.object(svc, "_get_session") as mock_gs:
+            mock_session = MagicMock()
+            mock_session.post = MagicMock(return_value=_MockContextManager(resp))
+            mock_gs.return_value = mock_session
+
+            chunks = await _collect(svc, [{"role": "user", "content": "test"}], cfg)
+
+        assert any("error" in c for c in chunks)

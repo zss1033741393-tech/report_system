@@ -150,7 +150,7 @@ class LLMConfigLoader:
             timeout_connect=provider.timeout_connect,
             timeout_read=provider.timeout_read,
             timeout_total=provider.timeout_total,
-            stream=model_def.stream if model_def else True,
+            stream=sc.get("stream", model_def.stream if model_def else True),
             max_retry=model_def.max_retry if model_def else 3,
             extra_payload=sc.get("extra_payload", model_def.extra_payload if model_def else {}),
         )
