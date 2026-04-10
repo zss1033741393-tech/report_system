@@ -118,6 +118,8 @@ class LLMService:
         tools: list[dict] | None = None,
     ) -> AsyncGenerator[Dict, None]:
         cfg = config or LLMConfig()
+        use_stream = cfg.stream
+
         model = cfg.model or self.default_model
 
         payload = {
@@ -126,16 +128,13 @@ class LLMService:
             "temperature": cfg.temperature,
             "top_p": cfg.top_p,
             "max_tokens": cfg.max_tokens,
-            "stream": True,
+            "stream": use_stream,
         }
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         if cfg.extra_payload:
             payload.update(cfg.extra_payload)
-
-        # 工具调用累积缓冲（index → {id, name, arguments_parts}）
-        _tc_buf: dict[int, dict] = {}
 
         timeout = aiohttp.ClientTimeout(
             connect=cfg.timeout_connect or self._timeout_connect,
@@ -147,6 +146,23 @@ class LLMService:
         request_kwargs = {"json": payload, "timeout": timeout}
         if self._proxy:
             request_kwargs["proxy"] = self._proxy
+
+        if use_stream:
+            async for chunk in self._do_stream(session, request_kwargs, cfg):
+                yield chunk
+        else:
+            async for chunk in self._do_non_stream(session, request_kwargs):
+                yield chunk
+
+    # ─── 流式 HTTP 请求 ───
+
+    async def _do_stream(
+        self, session: aiohttp.ClientSession,
+        request_kwargs: dict, cfg: LLMConfig,
+    ) -> AsyncGenerator[Dict, None]:
+        """流式请求，逐 chunk yield。"""
+        # 工具调用累积缓冲（index → {id, name, arguments_parts}）
+        _tc_buf: dict[int, dict] = {}
 
         # 初始值由 think_tag_mode 决定
         if self.think_tag_mode == "qwen3":
@@ -262,6 +278,79 @@ class LLMService:
 
         except Exception as e:
             logger.error(f"LLM stream error: {e}")
+            yield {"error": f"LLM 请求异常: {str(e)}"}
+
+    # ─── 非流式 HTTP 请求 ───
+
+    async def _do_non_stream(
+        self, session: aiohttp.ClientSession,
+        request_kwargs: dict,
+    ) -> AsyncGenerator[Dict, None]:
+        """非流式请求，一次性拿到完整响应后转换为与流式相同的 yield 格式。"""
+        try:
+            async with session.post(
+                f"{self.base_url}/chat/completions", **request_kwargs
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    yield {"error": f"LLM 调用失败: status={resp.status}, body={error_text[:500]}"}
+                    return
+
+                body = await resp.json()
+                choices = body.get("choices", [])
+                if not choices:
+                    yield {"error": "LLM 返回空 choices"}
+                    return
+
+                message = choices[0].get("message", {})
+
+                # ── reasoning_content ──
+                if reasoning := message.get("reasoning_content"):
+                    yield {"reasoning_content": reasoning}
+
+                # ── content（think 标签解析） ──
+                content = message.get("content") or ""
+                if content:
+                    parse_think = (self.think_tag_mode != "none")
+                    if not parse_think:
+                        yield {"content": content}
+                    else:
+                        # 完整文本中提取 <think>...</think> 和正文
+                        import re as _re
+                        think_match = _re.search(r'<think>(.*?)</think>', content, _re.DOTALL)
+                        if think_match:
+                            reasoning_text = think_match.group(1)
+                            answer_text = content[:think_match.start()] + content[think_match.end():]
+                            if reasoning_text.strip():
+                                yield {"reasoning_content": reasoning_text}
+                            if answer_text.strip():
+                                yield {"content": answer_text}
+                        else:
+                            # qwen3 模式下无 </think> 标签 → 全部当 reasoning
+                            if self.think_tag_mode == "qwen3" and "</think>" not in content:
+                                yield {"reasoning_content": content}
+                            else:
+                                yield {"content": content}
+
+                # ── tool_calls ──
+                if tc_list := message.get("tool_calls"):
+                    tool_calls = []
+                    for tc in tc_list:
+                        fn = tc.get("function", {})
+                        args_raw = fn.get("arguments", "")
+                        try:
+                            args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                        except json.JSONDecodeError:
+                            args = {"_raw": args_raw}
+                        tool_calls.append({
+                            "id": tc.get("id", ""),
+                            "name": fn.get("name", ""),
+                            "arguments": args,
+                        })
+                    yield {"tool_calls": tool_calls}
+
+        except Exception as e:
+            logger.error(f"LLM non-stream error: {e}")
             yield {"error": f"LLM 请求异常: {str(e)}"}
 
     # ─── 内部工具 ───
