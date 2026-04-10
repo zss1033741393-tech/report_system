@@ -422,3 +422,111 @@ class TestEmptyResponseDetection:
             chunks = await _collect(svc, [{"role": "user", "content": "test"}], cfg)
 
         assert any("error" in c for c in chunks)
+
+
+# ─── content 内嵌 <tool_call> 标签解析 ────────────────────────────────────────
+
+class TestToolCallTagParsing:
+
+    @pytest.mark.asyncio
+    async def test_think_and_tool_call_tags_in_content(self):
+        """模型将 <think> 和 <tool_call> 都放在 content 中时，正确拆分为 reasoning + tool_calls。"""
+        raw_content = (
+            '<think>\n用户想分析OTN升级，我需要先调用skill_router。\n</think>\n\n'
+            '<tool_call>\n{"name": "skill_router", "arguments": {"query": "分析政企OTN升级的机会点"}}\n</tool_call>'
+        )
+        message = {"role": "assistant", "content": raw_content, "tool_calls": []}
+        resp = _make_non_stream_response(message)
+        svc = _make_svc(think_tag_mode="qwen3")
+        cfg = _non_stream_config()
+
+        with patch.object(svc, "_get_session") as mock_gs:
+            mock_session = MagicMock()
+            mock_session.post = MagicMock(return_value=_MockContextManager(resp))
+            mock_gs.return_value = mock_session
+
+            chunks = await _collect(svc, [{"role": "user", "content": "test"}], cfg)
+
+        # 应有 reasoning_content
+        reasoning = "".join(c.get("reasoning_content", "") for c in chunks)
+        assert "skill_router" in reasoning
+
+        # 应有 tool_calls
+        tc_chunks = [c for c in chunks if "tool_calls" in c]
+        assert len(tc_chunks) == 1
+        tc = tc_chunks[0]["tool_calls"][0]
+        assert tc["name"] == "skill_router"
+        assert tc["arguments"] == {"query": "分析政企OTN升级的机会点"}
+
+        # 不应将 <tool_call> 标签当作普通 content 输出
+        content = "".join(c.get("content", "") for c in chunks)
+        assert "<tool_call>" not in content
+
+    @pytest.mark.asyncio
+    async def test_tool_call_tag_without_think(self):
+        """content 只有 <tool_call> 没有 <think> 时正确解析。"""
+        raw_content = '<tool_call>\n{"name": "get_session_status", "arguments": {}}\n</tool_call>'
+        message = {"role": "assistant", "content": raw_content, "tool_calls": []}
+        resp = _make_non_stream_response(message)
+        svc = _make_svc(think_tag_mode="none")
+        cfg = _non_stream_config()
+
+        with patch.object(svc, "_get_session") as mock_gs:
+            mock_session = MagicMock()
+            mock_session.post = MagicMock(return_value=_MockContextManager(resp))
+            mock_gs.return_value = mock_session
+
+            chunks = await _collect(svc, [{"role": "user", "content": "test"}], cfg)
+
+        tc_chunks = [c for c in chunks if "tool_calls" in c]
+        assert len(tc_chunks) == 1
+        assert tc_chunks[0]["tool_calls"][0]["name"] == "get_session_status"
+
+    @pytest.mark.asyncio
+    async def test_multiple_tool_call_tags(self):
+        """content 中有多个 <tool_call> 标签时全部解析。"""
+        raw_content = (
+            '<tool_call>\n{"name": "tool_a", "arguments": {"x": 1}}\n</tool_call>\n'
+            '<tool_call>\n{"name": "tool_b", "arguments": {"y": 2}}\n</tool_call>'
+        )
+        message = {"role": "assistant", "content": raw_content, "tool_calls": []}
+        resp = _make_non_stream_response(message)
+        svc = _make_svc(think_tag_mode="none")
+        cfg = _non_stream_config()
+
+        with patch.object(svc, "_get_session") as mock_gs:
+            mock_session = MagicMock()
+            mock_session.post = MagicMock(return_value=_MockContextManager(resp))
+            mock_gs.return_value = mock_session
+
+            chunks = await _collect(svc, [{"role": "user", "content": "test"}], cfg)
+
+        tc_chunks = [c for c in chunks if "tool_calls" in c]
+        assert len(tc_chunks) == 1
+        tcs = tc_chunks[0]["tool_calls"]
+        assert len(tcs) == 2
+        assert {tc["name"] for tc in tcs} == {"tool_a", "tool_b"}
+
+    @pytest.mark.asyncio
+    async def test_content_with_text_and_tool_call(self):
+        """content 中既有普通文本又有 <tool_call> 时，文本和工具调用各自正确输出。"""
+        raw_content = '让我先查一下状态。\n<tool_call>\n{"name": "get_session_status", "arguments": {}}\n</tool_call>'
+        message = {"role": "assistant", "content": raw_content, "tool_calls": []}
+        resp = _make_non_stream_response(message)
+        svc = _make_svc(think_tag_mode="none")
+        cfg = _non_stream_config()
+
+        with patch.object(svc, "_get_session") as mock_gs:
+            mock_session = MagicMock()
+            mock_session.post = MagicMock(return_value=_MockContextManager(resp))
+            mock_gs.return_value = mock_session
+
+            chunks = await _collect(svc, [{"role": "user", "content": "test"}], cfg)
+
+        content = "".join(c.get("content", "") for c in chunks)
+        assert "先查一下状态" in content
+        assert "<tool_call>" not in content
+
+        tc_chunks = [c for c in chunks if "tool_calls" in c]
+        assert len(tc_chunks) == 1
+        assert tc_chunks[0]["tool_calls"][0]["name"] == "get_session_status"

@@ -312,31 +312,42 @@ class LLMService:
                 if reasoning := message.get("reasoning_content"):
                     yield {"reasoning_content": reasoning}
 
-                # ── content（think 标签解析） ──
+                # ── content（think 标签 + tool_call 标签解析） ──
                 content = message.get("content") or ""
                 if content:
                     parse_think = (self.think_tag_mode != "none")
                     if not parse_think:
-                        yield {"content": content}
+                        # 不解析 think，但仍需提取 tool_call 标签
+                        remaining, text_tool_calls = self._extract_tool_call_tags(content)
+                        if remaining.strip():
+                            yield {"content": remaining}
+                        if text_tool_calls:
+                            yield {"tool_calls": text_tool_calls}
                     else:
-                        # 完整文本中提取 <think>...</think> 和正文
-                        import re as _re
-                        think_match = _re.search(r'<think>(.*?)</think>', content, _re.DOTALL)
+                        # 1) 提取 <think>...</think>
+                        think_match = re.search(r'<think>(.*?)</think>', content, re.DOTALL)
                         if think_match:
                             reasoning_text = think_match.group(1)
                             answer_text = content[:think_match.start()] + content[think_match.end():]
                             if reasoning_text.strip():
                                 yield {"reasoning_content": reasoning_text}
-                            if answer_text.strip():
-                                yield {"content": answer_text}
                         else:
                             # qwen3 模式下无 </think> 标签 → 全部当 reasoning
                             if self.think_tag_mode == "qwen3" and "</think>" not in content:
                                 yield {"reasoning_content": content}
+                                answer_text = ""
                             else:
-                                yield {"content": content}
+                                answer_text = content
 
-                # ── tool_calls ──
+                        # 2) 从剩余文本中提取 <tool_call>...</tool_call>
+                        if answer_text:
+                            remaining, text_tool_calls = self._extract_tool_call_tags(answer_text)
+                            if remaining.strip():
+                                yield {"content": remaining}
+                            if text_tool_calls:
+                                yield {"tool_calls": text_tool_calls}
+
+                # ── tool_calls（OpenAI 标准字段，与文本内嵌的 tool_call 标签互斥） ──
                 if tc_list := message.get("tool_calls"):
                     tool_calls = []
                     for tc in tc_list:
@@ -366,6 +377,42 @@ class LLMService:
             yield {"error": f"LLM 请求异常: {str(e)}"}
 
     # ─── 内部工具 ───
+
+    @staticmethod
+    def _extract_tool_call_tags(text: str) -> tuple[str, list[dict]]:
+        """从文本中提取 <tool_call>...</tool_call> 标签，转为标准 tool_calls 格式。
+
+        返回 (剩余文本, tool_calls列表)。
+        兼容模型将工具调用输出为文本标签而非 OpenAI function calling 格式的场景。
+        """
+        tool_calls = []
+        remaining = text
+
+        for match in re.finditer(r'<tool_call>\s*(.*?)\s*</tool_call>', text, re.DOTALL):
+            raw = match.group(1).strip()
+            try:
+                tc_data = json.loads(raw)
+                name = tc_data.get("name", "")
+                arguments = tc_data.get("arguments", {})
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        arguments = {"_raw": arguments}
+                tool_calls.append({
+                    "id": tc_data.get("id", f"tc_{len(tool_calls)}"),
+                    "name": name,
+                    "arguments": arguments,
+                })
+            except json.JSONDecodeError:
+                logger.warning(f"tool_call 标签内容解析失败: {raw[:200]}")
+                continue
+
+        if tool_calls:
+            # 移除所有 <tool_call> 标签
+            remaining = re.sub(r'<tool_call>\s*.*?\s*</tool_call>', '', text, flags=re.DOTALL)
+
+        return remaining, tool_calls
 
     @staticmethod
     def _merge_system_to_user(messages: list[dict]) -> list[dict]:
