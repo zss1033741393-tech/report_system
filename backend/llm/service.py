@@ -118,8 +118,7 @@ class LLMService:
         tools: list[dict] | None = None,
     ) -> AsyncGenerator[Dict, None]:
         cfg = config or LLMConfig()
-        # 带 tools 时强制流式：多数本地推理框架非流式不支持 function calling
-        use_stream = True if tools else cfg.stream
+        use_stream = cfg.stream
 
         model = cfg.model or self.default_model
 
