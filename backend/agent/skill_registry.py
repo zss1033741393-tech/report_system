@@ -135,13 +135,16 @@ class SkillRegistry:
         fm = fm_match.group(1)
         meta = SkillMeta(name="")
 
-        # 顶层简单字段
+        # 顶层简单字段（跳过缩进行，避免 params 子字段的 description 覆盖顶层）
         for line in fm.split("\n"):
-            line = line.strip()
-            if not line or line.startswith("#") or line.startswith("-"):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or stripped.startswith("-"):
                 continue
-            if ":" in line:
-                k, _, v = line.partition(":")
+            indent = len(line) - len(line.lstrip())
+            if indent > 0:
+                continue
+            if ":" in stripped:
+                k, _, v = stripped.partition(":")
                 k, v = k.strip(), v.strip()
                 if k == "name": meta.name = v
                 elif k == "display_name": meta.display_name = v
