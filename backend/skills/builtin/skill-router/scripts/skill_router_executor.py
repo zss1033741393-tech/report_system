@@ -1,15 +1,11 @@
 """SkillRouterExecutor —— 看网能力动态路由。
 
-扫描已沉淀的自定义 Skill，通过 LLM 精排返回候选列表，
-推送 skill_candidates SSE 事件并保存 Redis 供 LeadAgent 拦截。
+查询 outlines 表中 status IN ('active','approved') 的已沉淀大纲，
+通过 LLM 精排返回候选列表，推送 skill_candidates SSE 事件并保存 Redis 供 LeadAgent 拦截。
 """
 import json
 import logging
-import os
-import re
 from typing import AsyncGenerator, Union
-
-import yaml
 
 from agent.context import SkillContext, SkillResult
 from config import settings
@@ -36,39 +32,45 @@ ROUTER_SYSTEM_PROMPT = """\
 
 class SkillRouterExecutor:
 
-    def __init__(self, llm_service, skill_registry, session_service):
+    def __init__(self, llm_service, outline_store, session_service):
         self._llm = llm_service
-        self._reg = skill_registry
+        self._store = outline_store
         self._ss = session_service
 
     async def execute(self, ctx: SkillContext) -> AsyncGenerator[Union[str, SkillResult], None]:
         query = ctx.params.get("query", ctx.user_message)
-        sid = ctx.session_id
 
         if not getattr(settings, "SKILL_ROUTER_ENABLED", True):
             yield SkillResult(True, "skill_router 已禁用", data={"candidates": []})
             return
 
-        # Step 1: 扫描自定义 Skill 目录
+        # Step 1: 查询 DB 中已激活的大纲
         yield json.dumps({"type": "thinking_step", "step": "skill_router",
-                          "status": "running", "detail": "正在扫描已沉淀的看网能力..."}, ensure_ascii=False)
+                          "status": "running", "detail": "正在检索已沉淀的看网能力..."}, ensure_ascii=False)
 
-        custom_dir = "skills/custom"
-        skill_metas = []
-        if os.path.isdir(custom_dir):
-            for entry in sorted(os.listdir(custom_dir)):
-                skill_dir = os.path.join(custom_dir, entry)
-                if not os.path.isdir(skill_dir):
-                    continue
-                meta = self._load_skill_meta_full(skill_dir)
-                if meta:
-                    skill_metas.append(meta)
+        try:
+            rows = await self._store.list_active_outlines_for_router()
+        except Exception as e:
+            logger.error(f"skill_router: 查询 outlines 表失败: {e}", exc_info=True)
+            rows = []
 
-        if not skill_metas:
+        if not rows:
             yield json.dumps({"type": "thinking_step", "step": "skill_router",
                               "status": "done", "detail": "暂无已沉淀的看网能力"}, ensure_ascii=False)
             yield SkillResult(True, "无已沉淀能力", data={"candidates": []})
             return
+
+        # 构建元数据列表
+        skill_metas = []
+        for row in rows:
+            skill_metas.append({
+                "skill_id": row["skill_name"],
+                "outline_id": row["id"],
+                "display_name": row.get("display_name") or row["skill_name"],
+                "scene_intro": row.get("scene_intro", ""),
+                "keywords": row.get("keywords") or [],
+                "query_variants": row.get("query_variants") or [],
+            })
 
         yield json.dumps({"type": "thinking_step", "step": "skill_router",
                           "status": "running",
@@ -92,8 +94,8 @@ class SkillRouterExecutor:
             candidates.append({
                 "label": labels[i],
                 "skill_id": m["skill_id"],
-                "skill_dir": m["skill_dir"],
-                "display_name": m.get("display_name", m["skill_id"]),
+                "outline_id": m["outline_id"],
+                "display_name": m["display_name"],
                 "scene_intro": m.get("scene_intro", ""),
                 "keywords": m.get("keywords", []),
                 "description": desc,
@@ -124,7 +126,6 @@ class SkillRouterExecutor:
         from llm.config import SKILL_ROUTER_CONFIG
         from llm.agent_llm import AgentLLM
 
-        # 构建能力列表文本
         lines = []
         for m in skill_metas:
             kw_str = "、".join(m.get("keywords", [])[:5])
@@ -134,8 +135,7 @@ class SkillRouterExecutor:
                 f'  名称: {m.get("display_name", m["skill_id"])}\n'
                 f'  场景: {m.get("scene_intro", "")}\n'
                 f'  关键词: {kw_str}\n'
-                f'  触发问法示例: {qv_str}\n'
-                f'  看网逻辑摘要: {m.get("logic_summary", "")[:100]}'
+                f'  触发问法示例: {qv_str}'
             )
 
         skill_list_text = "\n\n".join(lines)
@@ -152,7 +152,6 @@ class SkillRouterExecutor:
             )
             data = await agent.chat_json(user_msg)
             raw_matches = data.get("matches", [])
-            # 兼容旧格式：如果 matches 项是字符串，转为 dict
             result = []
             for item in raw_matches:
                 if isinstance(item, str):
@@ -163,45 +162,3 @@ class SkillRouterExecutor:
         except Exception as e:
             logger.warning(f"skill_router LLM 精排失败，返回空候选: {e}")
             return []
-
-    @staticmethod
-    def _load_skill_meta_full(skill_dir: str) -> dict:
-        """读取 Skill 元数据：SKILL.md frontmatter + query_variants + 看网逻辑摘要。"""
-        skill_md_path = os.path.join(skill_dir, "SKILL.md")
-        if not os.path.isfile(skill_md_path):
-            return {}
-
-        try:
-            with open(skill_md_path, "r", encoding="utf-8") as f:
-                content = f.read()
-
-            # 解析 YAML frontmatter
-            fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
-            if not fm_match:
-                return {}
-            frontmatter = yaml.safe_load(fm_match.group(1)) or {}
-
-            # 提取看网逻辑摘要（## 看网逻辑 段落）
-            logic_match = re.search(r"##\s*看网逻辑\s*\n(.*?)(?=\n##|\Z)", content, re.DOTALL)
-            logic_summary = logic_match.group(1).strip()[:200] if logic_match else ""
-
-            # 读取 query_variants
-            qv_path = os.path.join(skill_dir, "references", "query_variants.txt")
-            query_variants = []
-            if os.path.isfile(qv_path):
-                with open(qv_path, "r", encoding="utf-8") as f:
-                    query_variants = [line.strip() for line in f if line.strip()]
-
-            skill_name = frontmatter.get("name", os.path.basename(skill_dir))
-            return {
-                "skill_id": skill_name,
-                "skill_dir": skill_dir,
-                "display_name": frontmatter.get("display_name", skill_name),
-                "scene_intro": frontmatter.get("scene_intro", ""),
-                "keywords": frontmatter.get("keywords", []) if isinstance(frontmatter.get("keywords"), list) else [],
-                "query_variants": query_variants,
-                "logic_summary": logic_summary,
-            }
-        except Exception as e:
-            logger.warning(f"加载 Skill 元数据失败: {skill_dir}, {e}")
-            return {}

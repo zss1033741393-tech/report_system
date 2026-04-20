@@ -1,4 +1,4 @@
-"""工具定义 —— 12 个 ReAct 工具的 schema + 执行函数。
+"""工具定义 —— ReAct 工具的 schema + 执行函数。
 
 每个工具函数签名：
   async def fn(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]
@@ -8,7 +8,8 @@
 工具分类：
   基础工具：read_skill_file, get_session_status
   运行态：search_skill, get_current_outline, clip_outline, inject_params, execute_data, render_report
-  设计态：understand_intent, extract_structure, design_outline, bind_data, preview_report, persist_skill
+  设计态：extract_intent（意图提取+双路径检索）, persist_outline（沉淀到DB）
+  报告修改：modify_report_data, modify_report_text
 """
 
 import json
@@ -358,55 +359,32 @@ async def _render_report(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[di
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 设计态工具（skill-factory 六步）
-# 使用 skill-factory 执行器的子步骤模式
+# 设计态工具（重构后：intent-extract + outline-persist 两个独立 Skill）
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _run_skill_factory_step(
-    step_name: str, args: dict, tool_ctx: ToolContext
-) -> AsyncGenerator[dict, None]:
-    """通用的 skill-factory 单步执行代理。"""
-    executor = tool_ctx.loader.get_executor("skill-factory")
-    if not executor:
-        yield {"result": SkillResult(False, "skill-factory 执行器未加载")}
-        return
+async def _extract_intent(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
+    """执行意图提取 + 双路径检索（Step1 LLM + Step2 纯算法）。
 
-    skill_ctx = SkillContext(
-        session_id=tool_ctx.session_id,
-        user_message=args.get("expert_input", ""),
-        params={**args, "_single_step": step_name},
-        current_outline=tool_ctx.current_outline,
-        trace_callback=tool_ctx.trace_callback,
-        step_results=tool_ctx.step_results,
-    )
-    result = None
-    async for item in executor.execute(skill_ctx):
-        if isinstance(item, SkillResult):
-            result = item
-        elif isinstance(item, str):
-            yield {"sse": item}
-
-    yield {"result": result or SkillResult(False, f"{step_name} 执行失败")}
-
-
-async def _understand_intent(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
-    """启动完整设计态流程（preview_only：步骤1-5）。完成后系统发送沉淀确认提示，等待用户决策。"""
+    路径A（自顶向下）：命中 L1~L4 高置信度节点，返回子树供 search_skill 渲染大纲。
+    路径B（自底向上）：仅命中 L5 指标，返回指标列表 + KB 内容，由 LLM 自由组织 L2~L4。
+    完成后系统缓存上下文到 Redis，发送 persist_prompt 等待用户确认是否沉淀。
+    """
     expert_input = args.get("expert_input", "")
     if not expert_input:
         yield {"result": SkillResult(False, "缺少 expert_input 参数")}
         return
 
-    executor = tool_ctx.loader.get_executor("skill-factory")
+    executor = tool_ctx.loader.get_executor("intent-extract")
     if not executor:
-        logger.error("understand_intent: skill-factory 执行器未加载")
-        yield {"result": SkillResult(False, "skill-factory 执行器未加载")}
+        logger.error("extract_intent: intent-extract 执行器未加载")
+        yield {"result": SkillResult(False, "intent-extract 执行器未加载")}
         return
 
-    logger.info(f"understand_intent: 启动 preview_only 流程 session={tool_ctx.session_id}")
+    logger.info(f"extract_intent: 启动 session={tool_ctx.session_id}")
     skill_ctx = SkillContext(
         session_id=tool_ctx.session_id,
         user_message=expert_input,
-        params={"mode": "preview_only", "expert_input": expert_input},
+        params={"expert_input": expert_input},
         current_outline=tool_ctx.current_outline,
         trace_callback=tool_ctx.trace_callback,
     )
@@ -417,57 +395,143 @@ async def _understand_intent(args: dict, tool_ctx: ToolContext) -> AsyncGenerato
         elif isinstance(item, str):
             yield {"sse": item}
 
-    final = result or SkillResult(False, "设计态流程失败")
-    logger.info(f"understand_intent: 完成 success={final.success}")
-
-    # 将 skill-factory 生成的大纲持久化到会话，使后续 clip/status 能正确识别
-    if final.success and final.data.get("outline_json"):
-        try:
-            await tool_ctx.chat_history.save_outline_state(
-                tool_ctx.session_id,
-                final.data["outline_json"],
-            )
-            tool_ctx.has_outline = True
-            tool_ctx.current_outline = final.data["outline_json"]
-            logger.info(f"understand_intent: 大纲已持久化到会话 session={tool_ctx.session_id}")
-        except Exception as e:
-            logger.warning(f"understand_intent: 大纲持久化失败（可忽略）: {e}")
-
-    yield {"result": final}
-
-
-# ── 以下分步工具在 executor 中无法单独执行（_single_step 参数从未在 executor 实现），
-#    已整合到 understand_intent(preview_only) 中。保留空壳避免 LLM 误调时报硬错误。
-
-async def _extract_structure(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
-    yield {"result": SkillResult(False, "此步骤已整合到 understand_intent，请勿单独调用")}
-
-async def _design_outline(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
-    yield {"result": SkillResult(False, "此步骤已整合到 understand_intent，请勿单独调用")}
-
-async def _bind_data(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
-    yield {"result": SkillResult(False, "此步骤已整合到 understand_intent，请勿单独调用")}
-
-async def _preview_report(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
-    yield {"result": SkillResult(False, "此步骤已整合到 understand_intent，请勿单独调用")}
-
-
-async def _persist_skill(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
-    context_key = args.get("context_key", tool_ctx.session_id)
-    executor = tool_ctx.loader.get_executor("skill-factory")
-    if not executor:
-        yield {"result": SkillResult(False, "skill-factory 执行器未加载")}
+    final = result or SkillResult(False, "意图提取失败")
+    if not final.success:
+        yield {"result": final}
         return
 
-    # persist_only 前：将 inject_params 写入 SQLite 的最新大纲 params 同步到 Redis 缓存。
-    # preview_only 阶段缓存的 fc 含默认 params，inject_params 只更新 SQLite 不更新缓存，
-    # 不同步则 SkillPersist 写 indicators.json 时使用旧默认值。
-    await _sync_injected_params_to_skill_cache(tool_ctx, context_key)
+    path = (final.data or {}).get("path", "no_match")
+    intent = (final.data or {}).get("intent", {})
+
+    # 路径 A：直接用子树生成大纲（复用 search_skill 渲染逻辑）
+    if path == "top_down":
+        top_down = (final.data or {}).get("top_down", {})
+        subtree = top_down.get("subtree")
+        anchor_info = top_down.get("anchor", {})
+        if subtree and anchor_info:
+            # 合并 paragraph（indicator_resolver）
+            rag_executor = tool_ctx.loader.get_executor("outline-generate")
+            if rag_executor:
+                rag_executor.merge_paragraph(subtree, skill_dir="")
+            # 渲染大纲
+            container = tool_ctx.container
+            renderer = container.get("outline_renderer") if container else None
+            if renderer:
+                chunks = []
+                async for chunk in renderer.render_stream(subtree, anchor_info):
+                    chunks.append(chunk)
+                    yield {"sse": json.dumps({"type": "outline_chunk", "content": chunk}, ensure_ascii=False)}
+                yield {"sse": json.dumps({"type": "outline_done", "anchor": anchor_info}, ensure_ascii=False)}
+            # 持久化大纲到会话
+            await tool_ctx.chat_history.save_outline_state(
+                tool_ctx.session_id, subtree, anchor_info
+            )
+            tool_ctx.has_outline = True
+            tool_ctx.current_outline = subtree
+            # 缓存上下文供 persist_outline 使用
+            cache_payload = {
+                "raw_input": expert_input,
+                "intent": intent,
+                "outline_json": subtree,
+                "path": "top_down",
+            }
+            await tool_ctx.session_service.redis.setex(
+                f"skill_factory_ctx:{tool_ctx.session_id}", 3600,
+                json.dumps(cache_payload, ensure_ascii=False)
+            )
+            yield {"sse": json.dumps({"type": "persist_prompt",
+                                      "message": "大纲已生成。是否将此次推理保存为新的看网能力？",
+                                      "context_key": tool_ctx.session_id}, ensure_ascii=False)}
+            yield {"result": SkillResult(True, f"路径A大纲生成完成（{anchor_info.get('name', '')}）",
+                                          data={"path": "top_down", "outline_json": subtree,
+                                                "intent": intent})}
+            return
+
+    # 路径 B：调用 bottom_up_organizer 生成大纲
+    if path in ("bottom_up", "no_match"):
+        bu_executor = tool_ctx.loader.get_executor("outline-generate")
+        bottom_up_data = (final.data or {}).get("bottom_up", {})
+
+        # 动态加载 BottomUpOrganizer（同目录下的模块）
+        try:
+            import importlib.util
+            import sys as _sys
+            rag_dir = None
+            for skill in tool_ctx.registry.get_enabled():
+                if skill.name == "outline-generate":
+                    rag_dir = skill.skill_dir
+                    break
+            if rag_dir:
+                bu_path = os.path.join(rag_dir, "scripts", "bottom_up_organizer.py")
+                spec = importlib.util.spec_from_file_location("bottom_up_organizer", bu_path)
+                bu_mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(bu_mod)
+                indicator_resolver = tool_ctx.container.get("indicator_resolver") if tool_ctx.container else None
+                llm_service = tool_ctx.container.get("llm_service") if tool_ctx.container else None
+                organizer = bu_mod.BottomUpOrganizer(llm_service, indicator_resolver)
+                bu_ctx = SkillContext(
+                    session_id=tool_ctx.session_id,
+                    user_message=expert_input,
+                    params={"intent": intent, "bottom_up": bottom_up_data, "raw_input": expert_input},
+                    trace_callback=tool_ctx.trace_callback,
+                )
+                bu_result = None
+                async for item in organizer.execute(bu_ctx):
+                    if isinstance(item, SkillResult):
+                        bu_result = item
+                    elif isinstance(item, str):
+                        yield {"sse": item}
+                if bu_result and bu_result.success:
+                    subtree = bu_result.data.get("subtree", {})
+                    anchor_info = bu_result.data.get("anchor", {})
+                    await tool_ctx.chat_history.save_outline_state(
+                        tool_ctx.session_id, subtree, anchor_info
+                    )
+                    tool_ctx.has_outline = True
+                    tool_ctx.current_outline = subtree
+                    cache_payload = {
+                        "raw_input": expert_input,
+                        "intent": intent,
+                        "outline_json": subtree,
+                        "path": "bottom_up",
+                    }
+                    await tool_ctx.session_service.redis.setex(
+                        f"skill_factory_ctx:{tool_ctx.session_id}", 3600,
+                        json.dumps(cache_payload, ensure_ascii=False)
+                    )
+                    yield {"sse": json.dumps({"type": "persist_prompt",
+                                              "message": "大纲已生成。是否将此次推理保存为新的看网能力？",
+                                              "context_key": tool_ctx.session_id}, ensure_ascii=False)}
+                    yield {"result": SkillResult(True, "路径B大纲生成完成",
+                                                  data={"path": "bottom_up", "outline_json": subtree,
+                                                        "intent": intent})}
+                    return
+                else:
+                    yield {"result": bu_result or SkillResult(False, "路径B大纲生成失败")}
+                    return
+        except Exception as e:
+            logger.error(f"extract_intent: BottomUpOrganizer 加载失败: {e}", exc_info=True)
+
+    yield {"result": SkillResult(False, f"意图提取完成但无法生成大纲 (path={path})")}
+
+
+async def _persist_outline(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
+    """将设计态大纲沉淀到 DB（outlines/outline_nodes/node_bindings 三张表）。
+    仅在用户明确说"保存/沉淀"时调用。
+    """
+    context_key = args.get("context_key", tool_ctx.session_id)
+    executor = tool_ctx.loader.get_executor("outline-persist")
+    if not executor:
+        yield {"result": SkillResult(False, "outline-persist 执行器未加载")}
+        return
+
+    # 同步 inject_params 修改的最新 params 到 Redis 缓存
+    await _sync_injected_params_to_cache(tool_ctx, context_key)
 
     skill_ctx = SkillContext(
         session_id=tool_ctx.session_id,
         user_message="",
-        params={"mode": "persist_only", "saved_context": context_key},
+        params={"context_key": context_key},
         trace_callback=tool_ctx.trace_callback,
     )
     result = None
@@ -477,78 +541,25 @@ async def _persist_skill(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[di
         elif isinstance(item, str):
             yield {"sse": item}
 
-    # 沉淀成功后热重载 custom skill 注册表，新 skill 立即对 skill_router 可见
-    if result and result.success:
-        try:
-            tool_ctx.registry.reload_custom_skills()
-            logger.info(f"persist_skill: custom skills 热重载完成 skill_name={result.data.get('skill_name', '')}")
-        except Exception as e:
-            logger.warning(f"persist_skill: custom skills 热重载失败（可忽略）: {e}")
-
-    yield {"result": result or SkillResult(False, "能力沉淀失败")}
+    yield {"result": result or SkillResult(False, "大纲沉淀失败")}
 
 
-async def _sync_injected_params_to_skill_cache(tool_ctx: ToolContext, context_key: str) -> None:
-    """将 chat_history（SQLite）中最新的大纲 params 同步到 skill_factory_ctx Redis 缓存。
-
-    inject_params 执行后只更新 SQLite 的 outline_json.paragraph.params，不更新
-    preview_only 阶段写入的 skill_factory_ctx Redis 缓存。此函数在 persist_only 执行前
-    补偿这个同步缺口，确保 indicators.json 中写入的是用户最终确认的参数值。
-    """
+async def _sync_injected_params_to_cache(tool_ctx: ToolContext, context_key: str) -> None:
+    """将 inject_params 写入 SQLite 的最新 params 同步到 Redis 缓存，保持 persist 时数据一致。"""
     try:
         cache_key = f"skill_factory_ctx:{context_key}"
         cached = await tool_ctx.session_service.redis.get(cache_key)
         if not cached:
             return
-
         fc_dict = json.loads(cached)
-        bindings = fc_dict.get("bindings", [])
-        if not bindings:
-            return
-
-        # 读取 SQLite 中 inject_params 更新后的最新大纲
         state = await tool_ctx.chat_history.get_outline_state(tool_ctx.session_id)
-        if not state or not state.get("outline_json"):
-            return
-
-        live_outline = state["outline_json"]
-
-        # 构建 node_id → 节点快查表
-        node_map: dict = {}
-        _collect_node_map(live_outline, node_map)
-
-        # 将最新 params 覆写到缓存的 bindings（只改 params，其余字段不变）
-        updated = False
-        for binding in bindings:
-            node_id = binding.get("node_id", "")
-            live_node = node_map.get(node_id)
-            if not live_node:
-                continue
-            live_params = live_node.get("paragraph", {}).get("params", {})
-            if live_params:
-                binding.setdefault("paragraph", {})["params"] = live_params
-                updated = True
-
-        if updated:
-            # outline_json 一并更新，保持 outline.json 与 indicators.json 一致
-            fc_dict["outline_json"] = live_outline
+        if state and state.get("outline_json"):
+            fc_dict["outline_json"] = state["outline_json"]
             await tool_ctx.session_service.redis.setex(
                 cache_key, 3600, json.dumps(fc_dict, ensure_ascii=False)
             )
-            logger.info(
-                f"_sync_injected_params_to_skill_cache: 已同步注入参数到沉淀缓存 "
-                f"session={tool_ctx.session_id} bindings_updated={sum(1 for b in bindings if node_map.get(b.get('node_id', '')))}"
-            )
     except Exception as e:
-        logger.warning(f"同步注入参数到沉淀缓存失败（继续沉淀，params 可能为默认值）: {e}")
-
-
-def _collect_node_map(node: dict, result: dict) -> None:
-    """递归构建 {node_id: node_dict} 映射，供 params 快速查找。"""
-    if node_id := node.get("id"):
-        result[node_id] = node
-    for child in node.get("children", []):
-        _collect_node_map(child, result)
+        logger.warning(f"同步 params 到缓存失败（可忽略）: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -893,14 +904,16 @@ def register_all_tools(registry: ToolRegistry):
         fn=_render_report,
     )
 
-    # ── 设计态工具（skill-factory 六步）──
+    # ── 设计态工具 ──
     registry.register(
-        name="understand_intent",
+        name="extract_intent",
         description=(
-            "执行完整看网能力设计流程（五步：意图理解→结构提取→大纲设计→数据绑定→报告预览）。"
-            "用户输入超过 80 字的看网逻辑描述时调用此工具。"
-            "流程完成后系统自动向用户发送沉淀确认提示，等待用户决定是否保存为可复用能力。"
-            "【重要】此工具调用完成后，不得再调用 persist_skill，必须等待用户明确回复。"
+            "执行意图提取+双路径检索，生成看网分析大纲。"
+            "用户输入超过80字的看网逻辑描述时调用此工具。"
+            "路径A（命中L1~L4高置信度节点）直接返回子树大纲；"
+            "路径B（仅命中L5指标）由LLM自底向上自由组织L2~L4结构。"
+            "流程完成后系统自动向用户发送沉淀确认提示，等待用户决定是否保存。"
+            "【重要】此工具调用完成后，不得再调用 persist_outline，必须等待用户明确回复。"
         ),
         parameters={
             "type": "object",
@@ -909,13 +922,13 @@ def register_all_tools(registry: ToolRegistry):
             },
             "required": ["expert_input"],
         },
-        fn=_understand_intent,
+        fn=_extract_intent,
     )
 
     registry.register(
-        name="persist_skill",
+        name="persist_outline",
         description=(
-            "将设计态成果沉淀为可复用看网能力并写入系统。"
+            "将设计态大纲沉淀到DB（outlines/outline_nodes/node_bindings 三张表）。"
             "【重要】仅在用户明确说'保存/沉淀/确认保存'时才调用此工具。"
         ),
         parameters={
@@ -925,7 +938,7 @@ def register_all_tools(registry: ToolRegistry):
             },
             "required": [],
         },
-        fn=_persist_skill,
+        fn=_persist_outline,
     )
 
     # ── 报告修改工具 ──

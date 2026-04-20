@@ -13,7 +13,7 @@ executor:
   class: SkillRouterExecutor
   deps:
     - llm_service
-    - skill_registry
+    - outline_store
     - session_service
   config: {}
 ---
@@ -26,17 +26,17 @@ executor:
 
 ## 工作流：skill_router(query)
 
-**Step 1：扫描自定义 Skill 目录**
-遍历 `skills/custom/` 下所有有效 Skill 目录，读取元数据。
+**Step 1：查询 outlines 表**
+调用 `outline_store.list_active_outlines_for_router()` 获取 status IN ('active','approved') 的大纲记录。
 
-**Step 2：加载 Skill 元数据**
-读取每个 Skill 的 SKILL.md frontmatter + references/query_variants.txt + 看网逻辑摘要。
+**Step 2：构建元数据列表**
+从 DB 记录中提取 skill_name、display_name、scene_intro、keywords、query_variants。
 
 **Step 3：LLM 精排**
-将用户 query 和所有 Skill 元数据发给 LLM，返回匹配的 Skill ID 列表（最多 5 个）。
+将用户 query 和所有元数据发给 LLM，返回匹配的 Skill ID 列表（最多 5 个）。
 
 **Step 4：构建候选列表**
-将匹配 Skill 的展示信息（display_name、scene_intro、keywords、skill_dir）组装成候选项。
+将匹配 Skill 的展示信息（display_name、scene_intro、keywords、outline_id）组装成候选项。
 
 **Step 5：推送 SSE + 保存 Redis**
 发送 `skill_candidates` 事件到前端，同时将候选列表保存到 Redis（TTL=300s）。

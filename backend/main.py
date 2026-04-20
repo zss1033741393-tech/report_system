@@ -23,6 +23,8 @@ from services.embedding_service import EmbeddingService
 from services.session_service import SessionService
 from services.chat_history import ChatHistoryService
 from services.kb_content_store import KBContentStore
+from services.outline_store import OutlineStore
+from services.review_service import ReviewService
 from agent.lead_agent import LeadAgent
 from agent.middleware import MiddlewareChain, HistoryMiddleware, OutlineStateMiddleware, PendingConfirmMiddleware
 from agent.skill_registry import SkillRegistry
@@ -31,6 +33,7 @@ from agent.service_container import ServiceContainer
 from routers.chat import router as chat_router
 from routers.admin import router as admin_router
 from routers.skills import router as skills_router
+from routers.review import router as review_router
 from agent.memory import MemoryStore, MemoryQueue, MemoryUpdater
 from utils.log_setup import setup_logging
 
@@ -82,7 +85,13 @@ async def lifespan(app: FastAPI):
     kb_store = KBContentStore(f"{settings.DB_DIR}/kb_contents.db")
     await kb_store.init()
 
+    outline_store = OutlineStore(f"{settings.DB_DIR}/outlines.db")
+    await outline_store.init()
+
     outline_renderer = OutlineRenderer()
+
+    review_service = ReviewService(outline_store, neo4j_retriever)
+    app.state.review_service = review_service
 
     # ─── 2. 注册所有服务到 ServiceContainer ───
     container = ServiceContainer()
@@ -94,6 +103,7 @@ async def lifespan(app: FastAPI):
     container.register("session_service", session_service)
     container.register("chat_history", chat_history)
     container.register("kb_store", kb_store)
+    container.register("outline_store", outline_store)
 
     # Mock 数据服务
     from services.data.mock_data_service import MockDataService
@@ -105,6 +115,14 @@ async def lifespan(app: FastAPI):
     _default_indicators_path = os.path.join(os.path.dirname(__file__), "services", "data", "default_indicators.json")
     indicator_resolver = IndicatorResolver(_default_indicators_path)
     container.register("indicator_resolver", indicator_resolver)
+
+    # 初始化 report_sdk 全局客户端（供 Skill 脚本直接 import 使用）
+    from vendor.report_sdk import neo4j_client, faiss_client, kb_store_client, embedding_client, outline_db
+    neo4j_client.init(neo4j_retriever)
+    faiss_client.init(faiss_retriever)
+    kb_store_client.init(kb_store)
+    embedding_client.init(embedding_service)
+    outline_db.init(outline_store)
 
     logger.info(f"ServiceContainer: {container.registered_names()}")
 
@@ -139,6 +157,7 @@ async def lifespan(app: FastAPI):
         "session_service": session_service,
         "faiss_retriever": faiss_retriever,
         "kb_store": kb_store,
+        "outline_store": outline_store,
         "container": container,
         "memory_store": memory_store,
         "skill_registry": registry,
@@ -155,6 +174,7 @@ async def lifespan(app: FastAPI):
     await session_service.close()
     await chat_history.close()
     await kb_store.close()
+    await outline_store.close()
     await llm_service.close()
 
 
@@ -163,6 +183,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 app.include_router(chat_router)
 app.include_router(admin_router)
 app.include_router(skills_router)
+app.include_router(review_router)
 
 
 @app.get("/health")
