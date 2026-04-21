@@ -1,7 +1,7 @@
-"""SkillRouterExecutor —— 看网能力动态路由。
+"""SkillRouterExecutor —— 看网能力动态路由——纯算法，不含 LLM 调用。
 
-查询 outlines 表中 status IN ('active','approved') 的已沉淀大纲，
-通过 LLM 精排返回候选列表，推送 skill_candidates SSE 事件并保存 Redis 供 LeadAgent 拦截。
+LLM 精排（matched_ids）已上移至 tool_definitions._skill_router。
+executor 只负责：查询 outlines 表 → 构建候选列表 → 推送 SSE。
 """
 import json
 import logging
@@ -12,28 +12,10 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-ROUTER_SYSTEM_PROMPT = """\
-你是看网能力路由专家。根据用户的分析需求，从已沉淀的看网能力列表中找出最相关的候选项，并为每个候选生成简短的差异化描述帮助用户选择。
-
-## 输出格式
-用 ```json ``` 代码块包裹，格式：
-```json
-{"matches": [{"skill_id": "skill_id1", "description": "该方案侧重于..."}, {"skill_id": "skill_id2", "description": "该方案侧重于..."}]}
-```
-- matches 为匹配的候选列表，最多 5 个，按相关度从高到低排列
-- 每个候选包含 skill_id 和 description 两个字段
-- description 规则：
-  - 多个候选时：突出该方案与其他候选的差异点（如分析维度、侧重场景、数据来源的不同），30-50字
-  - 仅一个候选时：简要说明该能力适合的场景，30字以内
-- 若无匹配则返回空列表：{"matches": []}
-- 只输出 JSON，不要加解释文字
-"""
-
 
 class SkillRouterExecutor:
 
-    def __init__(self, llm_service, outline_store, session_service):
-        self._llm = llm_service
+    def __init__(self, outline_store, session_service):
         self._store = outline_store
         self._ss = session_service
 
@@ -74,12 +56,10 @@ class SkillRouterExecutor:
 
         yield json.dumps({"type": "thinking_step", "step": "skill_router",
                           "status": "running",
-                          "detail": f"找到 {len(skill_metas)} 个已沉淀能力，正在 LLM 精排..."}, ensure_ascii=False)
+                          "detail": f"找到 {len(skill_metas)} 个已沉淀能力，等待精排..."}, ensure_ascii=False)
 
-        # Step 2: LLM 精排
-        matched_ids = await self._llm_select_skills(
-            query, skill_metas, trace_callback=ctx.trace_callback
-        )
+        # Step 2: 接收 tool 层 LLM 预计算的精排结果（executor 不调 LLM）
+        matched_ids = ctx.params.get("matched_ids", [])
 
         # Step 3: 构建候选列表
         meta_map = {m["skill_id"]: m for m in skill_metas}
@@ -119,46 +99,3 @@ class SkillRouterExecutor:
 
         yield SkillResult(True, f"路由完成，{len(candidates)} 个候选",
                           data={"candidates": candidates, "query": query})
-
-    async def _llm_select_skills(self, query: str, skill_metas: list,
-                                  trace_callback=None) -> list:
-        """独立 LLM 调用精排 Skill，返回 [{"skill_id": str, "description": str}, ...]。"""
-        from llm.config import SKILL_ROUTER_CONFIG
-        from llm.agent_llm import AgentLLM
-
-        lines = []
-        for m in skill_metas:
-            kw_str = "、".join(m.get("keywords", [])[:5])
-            qv_str = "、".join(m.get("query_variants", [])[:3])
-            lines.append(
-                f'skill_id={m["skill_id"]}\n'
-                f'  名称: {m.get("display_name", m["skill_id"])}\n'
-                f'  场景: {m.get("scene_intro", "")}\n'
-                f'  关键词: {kw_str}\n'
-                f'  触发问法示例: {qv_str}'
-            )
-
-        skill_list_text = "\n\n".join(lines)
-        user_msg = f"## 用户需求\n{query}\n\n## 已沉淀看网能力列表\n{skill_list_text}"
-
-        try:
-            agent = AgentLLM(
-                self._llm,
-                system_prompt=ROUTER_SYSTEM_PROMPT,
-                config=SKILL_ROUTER_CONFIG,
-                trace_callback=trace_callback,
-                llm_type="skill_router",
-                step_name="skill_router_select",
-            )
-            data = await agent.chat_json(user_msg)
-            raw_matches = data.get("matches", [])
-            result = []
-            for item in raw_matches:
-                if isinstance(item, str):
-                    result.append({"skill_id": item, "description": ""})
-                elif isinstance(item, dict) and "skill_id" in item:
-                    result.append({"skill_id": item["skill_id"], "description": item.get("description", "")})
-            return result
-        except Exception as e:
-            logger.warning(f"skill_router LLM 精排失败，返回空候选: {e}")
-            return []

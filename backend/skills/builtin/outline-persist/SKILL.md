@@ -8,6 +8,7 @@ params:
     type: string
     required: false
     description: Redis 缓存 key（通常为 session_id），用于恢复 intent-extract 产出的上下文
+paradigm: Generator
 executor:
   module: outline_persist_executor
   class: OutlinePersistExecutor

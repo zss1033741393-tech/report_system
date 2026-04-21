@@ -8,11 +8,11 @@ params:
     type: string
     required: true
     description: 专家输入的看网逻辑原文（>80字）
+paradigm: Pipeline
 executor:
   module: intent_extract_executor
   class: IntentExtractExecutor
   deps:
-    - llm_service
     - embedding_service
     - faiss_retriever
     - neo4j_retriever
@@ -29,27 +29,28 @@ executor:
 ## 适用场景
 用户输入超过 80 字的看网逻辑描述时，由 `extract_intent` 工具调用此技能。
 
-## 工作流
+## Metadata
+- **paradigm**: Pipeline（Step1 由 tool 层 LLM 完成，Step2~3 由 executor 纯算法完成）
+- **when_to_use**: 专家输入超过 80 字的看网逻辑，由 `extract_intent` 工具调用
+- **inputs**: expert_input（原文）、intent（tool 层 LLM 预计算，含 scene_intro/keywords/...）
+- **outputs**: path（top_down/bottom_up/no_match）、intent、top_down 或 bottom_up 数据
 
-### Step 1：意图提取（LLM）
-分析用户看网逻辑，提取：
-- `scene_intro`：50字以内场景简介
-- `keywords`：3-5个关键词
-- `query_variants`：3种触发问法
-- `skill_name`：英文下划线格式技能名
+## When to Use
+- ✅ 用户输入超过 80 字的设计态看网逻辑描述
+- ❌ 运行态用户查询（使用 search_skill / skill_router）
 
-### Step 2：语义检索（算法）
-1. 将 scene_intro + keywords 拼接为检索文本，向量化
-2. FAISS 搜索，top_k=20，threshold=0.3
-3. Neo4j 获取候选节点祖先路径
+## How to Use
 
-### Step 3：路径判断（算法，无 LLM）
-- **路径 A（自顶向下）**：候选中存在 L1~L4 score > 0.7 的高置信度命中
-  - 取最高分 L1~L4 节点作为锚点，拉取子树
-- **路径 B（自底向上）**：仅命中 L5 指标节点（L1~L4 score 均 < 0.7）
-  - 收集所有 L5 候选，从 KBContentStore 加载 expand_logic/chapter_template
+> Step 1 LLM 意图提取在 **tool 层**（`tool_definitions._llm_extract_intent`）完成。
 
-### 输出
+**Step 1（tool 层 LLM）**：`_llm_extract_intent(expert_input)` → intent JSON
+**Step 2（executor 算法）**：Embedding + FAISS 检索，top_k=20, threshold=0.3
+**Step 3（executor 算法）**：Neo4j 祖先路径 → 纯算法路径判断（score_threshold=0.7）
+
+## References
+- `references/intent_prompt.md` — 意图提取 LLM prompt
+
+## 输出格式
 ```json
 {
   "path": "top_down" | "bottom_up" | "no_match",

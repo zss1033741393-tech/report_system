@@ -8,11 +8,11 @@ params:
     type: string
     required: true
     description: 用户的分析需求描述
+paradigm: Tool Wrapper
 executor:
   module: skill_router_executor
   class: SkillRouterExecutor
   deps:
-    - llm_service
     - outline_store
     - session_service
   config: {}
@@ -21,25 +21,29 @@ executor:
 # 看网能力路由（Skill Router）
 
 ## 适用场景
-用户提出看网分析需求时，优先检索已沉淀的看网能力，通过 LLM 精排返回候选列表，
-让用户从中选择，或直接进入 GraphRAG 流程。
+用户提出看网分析需求时，优先检索已沉淀的看网能力，返回候选列表让用户选择，
+或在无匹配时直接进入 GraphRAG 流程。
 
-## 工作流：skill_router(query)
+## Metadata
+- **paradigm**: Tool Wrapper（LLM 精排在 tool 层完成，executor 只做纯算法）
+- **when_to_use**: 用户提出看网分析需求时，通过 `skill_router` 工具调用
+- **inputs**: query（用户需求）、matched_ids（tool 层 LLM 预计算的精排结果）
+- **outputs**: candidates（候选能力列表）
 
-**Step 1：查询 outlines 表**
-调用 `outline_store.list_active_outlines_for_router()` 获取 status IN ('active','approved') 的大纲记录。
+## When to Use
+- ✅ 用户提出看网分析需求，需检索已有能力
+- ❌ 已明确选择某个 Skill 后（直接加载大纲）
 
-**Step 2：构建元数据列表**
-从 DB 记录中提取 skill_name、display_name、scene_intro、keywords、query_variants。
+## How to Use
 
-**Step 3：LLM 精排**
-将用户 query 和所有元数据发给 LLM，返回匹配的 Skill ID 列表（最多 5 个）。
+> LLM 精排在 **tool 层**（`tool_definitions._skill_router`）完成，executor 只做纯算法。
 
-**Step 4：构建候选列表**
-将匹配 Skill 的展示信息（display_name、scene_intro、keywords、outline_id）组装成候选项。
+**Step 1（executor）**：查询 outlines 表，获取 status IN ('active','approved') 的记录，构建元数据列表
+**Step 2（tool 层 LLM）**：`_llm_route_skills(query, skill_metas)` → matched_ids（最多 5 个）
+**Step 3（executor）**：接收 `params.matched_ids`，构建候选列表，推送 SSE + 保存 Redis
 
-**Step 5：推送 SSE + 保存 Redis**
-发送 `skill_candidates` 事件到前端，同时将候选列表保存到 Redis（TTL=300s）。
+## References
+- `references/router_system_prompt.md` — 精排 LLM system prompt
 
 ## 关键规则
 - 若无已沉淀 Skill 或 LLM 精排无匹配，直接返回空候选列表

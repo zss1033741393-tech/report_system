@@ -1,14 +1,19 @@
 """工具定义 —— ReAct 工具的 schema + 执行函数。
 
-每个工具函数签名：
-  async def fn(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]
-  yield {"sse": str}          → 透传 SSE 事件
-  yield {"result": SkillResult}  → 工具执行结果（最后一次）
+架构分层：
+  L1 工具（Agent 常驻）：get_skill_instructions（按需加载 SKILL.md 正文）
+  L2 工具（按需加载）  ：get_skill_reference（加载 references/ 文件）
+  LLM helper 函数     ：_llm_*（统一管理所有子 LLM 调用，executor 不含任何 LLM 逻辑）
+  工具函数签名：async def fn(args, tool_ctx) -> AsyncGenerator[dict, None]
+    yield {"sse": str}            → 透传 SSE 事件
+    yield {"result": SkillResult} → 工具执行结果（最后一次）
 
 工具分类：
-  基础工具：read_skill_file, get_session_status
-  运行态：search_skill, get_current_outline, clip_outline, inject_params, execute_data, render_report
-  设计态：extract_intent（意图提取+双路径检索）, persist_outline（沉淀到DB）
+  Skill 披露：get_skill_instructions, get_skill_reference
+  基础查询：get_session_status
+  运行态：skill_router, search_skill, get_current_outline, clip_outline,
+          inject_params, execute_data, render_report
+  设计态：extract_intent, persist_outline
   报告修改：modify_report_data, modify_report_text
 """
 
@@ -22,6 +27,196 @@ from agent.context import SkillContext, SkillResult
 from agent.tool_registry import ToolContext, ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM Helper 函数（统一管理所有子 LLM 调用，executor 层零 LLM 依赖）
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _llm_extract_intent(expert_input: str, llm_service, trace_callback=None) -> dict:
+    """意图提取：自然语言 → scene_intro/keywords/query_variants/skill_name。"""
+    from llm.agent_llm import AgentLLM
+    from llm.config import SKILL_FACTORY_JSON_CONFIG
+    prompt = (
+        "你是看网逻辑分析专家。分析看网逻辑文本，提取结构化信息。\n\n"
+        "## 输出格式\n"
+        '```json\n{"scene_intro":"50字以内","keywords":["3-5个关键词"],'
+        '"query_variants":["3种用户问法"],"skill_name":"英文下划线"}\n```\n\n'
+        f"## 看网逻辑\n{expert_input}\n\n用 ```json ``` 代码块包裹输出。"
+    )
+    agent = AgentLLM(llm_service, "", SKILL_FACTORY_JSON_CONFIG,
+                     trace_callback=trace_callback,
+                     llm_type="intent_extract", step_name="intent_extract")
+    try:
+        result = await agent.chat_json(prompt)
+        return {
+            "scene_intro": result.get("scene_intro", ""),
+            "keywords": result.get("keywords", []),
+            "query_variants": result.get("query_variants", [])[:5],
+            "skill_name": result.get("skill_name", "unnamed_skill"),
+        }
+    except Exception as e:
+        logger.warning(f"意图提取 LLM 失败: {e}")
+        return {"scene_intro": "", "keywords": [], "query_variants": [], "skill_name": "unnamed_skill"}
+
+
+async def _llm_select_anchor(query: str, nodes: list, llm_service, trace_callback=None) -> dict:
+    """锚点选择：从 Neo4j 候选节点中选出最符合用户意图的唯一节点。"""
+    from llm.agent_llm import AgentLLM
+    from llm.config import ANCHOR_SELECT_CONFIG
+    system_prompt = (
+        "你是知识库节点选择专家。从候选中选出最符合用户意图的唯一节点。\n"
+        "判断原则: 宽泛→高层级，具体→低层级，父子关系时按粒度判断。\n"
+        '用 ```json ``` 代码块包裹输出，格式:\n'
+        '```json\n{"selected_id":"","selected_name":"","selected_path":"","level":0,"reason":""}\n```'
+    )
+    cs = "\n".join(f'- id={n["id"]} name={n["name"]} level={n["level"]} path={n.get("path","")}' for n in nodes)
+    agent = AgentLLM(llm_service, system_prompt, ANCHOR_SELECT_CONFIG,
+                     trace_callback=trace_callback, llm_type="anchor_select", step_name="anchor_select")
+    try:
+        return await agent.chat_json(f"## 候选\n{cs}\n\n## 问题\n{query}")
+    except Exception:
+        f = nodes[0]
+        return {"selected_id": f["id"], "selected_name": f["name"],
+                "selected_path": f.get("path", ""), "level": f["level"], "reason": "fallback"}
+
+
+async def _llm_filter_nodes(subtree: dict, focus_dims: list, focus_items: list,
+                             exclude: list, llm_service, trace_callback=None) -> list:
+    """条件裁剪：返回应被移除的节点名称列表（executor 用于 _prune_tree）。"""
+    from llm.agent_llm import AgentLLM
+    from llm.config import LLMConfig
+
+    l3_l4_names = []
+    for child in subtree.get("children", []):
+        if child.get("level") in (3, 4):
+            l3_l4_names.append(f'- {child["name"]} (L{child["level"]})')
+        for gc in child.get("children", []):
+            if gc.get("level") in (3, 4):
+                l3_l4_names.append(f'- {gc["name"]} (L{gc["level"]})')
+    if not l3_l4_names:
+        return []
+
+    prompt = (
+        "你是大纲裁剪专家。根据用户条件判断哪些节点应该保留。\n\n"
+        f"## 用户条件\n关注的维度: {', '.join(focus_dims) or '无特定要求'}\n"
+        f"关注的评估项: {', '.join(focus_items) or '无特定要求'}\n"
+        f"排除: {', '.join(exclude) or '无'}\n\n"
+        f"## 待判断的节点列表\n{chr(10).join(l3_l4_names)}\n\n"
+        "用 ```json ``` 代码块包裹，格式: "
+        '{"keep": ["节点名1"], "remove": ["节点名2"]}'
+    )
+    agent = AgentLLM(llm_service, "", LLMConfig(temperature=0.1, max_tokens=512, response_format="json"),
+                     trace_callback=trace_callback, llm_type="filter", step_name="condition_filter")
+    try:
+        result = await agent.chat_json(prompt)
+        return result.get("remove", [])
+    except Exception as e:
+        logger.warning(f"条件裁剪 LLM 失败，保留完整子树: {e}")
+        return []
+
+
+async def _llm_organize_bottom_up(intent: dict, bottom_up: dict, raw_input: str,
+                                   llm_service, trace_callback=None) -> dict:
+    """自底向上大纲组织：返回完整大纲树 JSON（L2 根节点）。"""
+    from llm.agent_llm import AgentLLM
+    from llm.config import SKILL_FACTORY_OUTLINE_CONFIG
+
+    # 从 BottomUpOrganizer.build_llm_prompt 获取 prompt（避免重复维护）
+    import importlib.util, sys as _sys
+    bu_path = _find_skill_script("outline-generate", "bottom_up_organizer.py")
+    if bu_path:
+        spec = importlib.util.spec_from_file_location("_bu_mod", bu_path)
+        bu_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bu_mod)
+        system_prompt, user_msg = bu_mod.BottomUpOrganizer.build_llm_prompt(intent, bottom_up, raw_input)
+    else:
+        # 内联降级
+        system_prompt = "你是报告大纲设计专家，请根据以下信息组织大纲树。"
+        user_msg = f"看网逻辑: {raw_input}"
+
+    agent = AgentLLM(llm_service, system_prompt, SKILL_FACTORY_OUTLINE_CONFIG,
+                     trace_callback=trace_callback,
+                     llm_type="bottom_up_outline", step_name="bottom_up_organize")
+    try:
+        return await agent.chat_json(user_msg)
+    except Exception as e:
+        logger.error(f"路径B LLM 大纲生成失败: {e}", exc_info=True)
+        raise
+
+
+async def _llm_parse_clip(instruction: str, nodes_text: str,
+                           llm_service, trace_callback=None) -> list:
+    """裁剪指令解析：自然语言 → 结构化操作列表。"""
+    from llm.agent_llm import AgentLLM
+    from llm.config import LLMConfig
+    prompt = (
+        "你是大纲裁剪专家。根据用户指令，生成裁剪操作列表。\n\n"
+        f"## 当前大纲节点\n{nodes_text}\n\n"
+        f"## 用户指令\n{instruction}\n\n"
+        '## 输出格式\n用 ```json ``` 代码块包裹，格式：\n'
+        '{"instructions": [\n'
+        '    {"type": "delete_node", "target_name": "节点名", "level": 4},\n'
+        '    {"type": "filter_param", "target_name": "节点名", "param_key": "industry", "param_value": "金融"},\n'
+        '    {"type": "keep_only", "target_names": ["节点名1", "节点名2"]}\n'
+        ']}'
+    )
+    agent = AgentLLM(llm_service, "", LLMConfig(temperature=0.1, max_tokens=1024),
+                     trace_callback=trace_callback, llm_type="outline_clip", step_name="parse_clip")
+    try:
+        result = await agent.chat_json(prompt)
+        return result.get("instructions", [])
+    except Exception as e:
+        logger.warning(f"裁剪指令解析失败: {e}")
+        return []
+
+
+async def _llm_route_skills(query: str, skill_metas: list,
+                             llm_service, trace_callback=None) -> list:
+    """Skill 路由精排：返回 [{"skill_id": str, "description": str}, ...]。"""
+    from llm.agent_llm import AgentLLM
+    from llm.config import SKILL_ROUTER_CONFIG
+    system_prompt = (
+        "你是看网能力路由专家。根据用户的分析需求，从已沉淀的看网能力列表中找出最相关的候选项，"
+        "并为每个候选生成简短的差异化描述帮助用户选择。\n\n"
+        "## 输出格式\n用 ```json ``` 代码块包裹，格式：\n"
+        '{"matches": [{"skill_id": "id1", "description": "该方案侧重于..."}, ...]}\n'
+        "- 最多 5 个，按相关度从高到低排列\n- 若无匹配返回 {\"matches\": []}"
+    )
+    lines = []
+    for m in skill_metas:
+        kw_str = "、".join(m.get("keywords", [])[:5])
+        qv_str = "、".join(m.get("query_variants", [])[:3])
+        lines.append(
+            f'skill_id={m["skill_id"]}\n'
+            f'  名称: {m.get("display_name", m["skill_id"])}\n'
+            f'  场景: {m.get("scene_intro", "")}\n'
+            f'  关键词: {kw_str}\n'
+            f'  触发问法: {qv_str}'
+        )
+    user_msg = f"## 用户需求\n{query}\n\n## 已沉淀看网能力列表\n" + "\n\n".join(lines)
+    agent = AgentLLM(llm_service, system_prompt, SKILL_ROUTER_CONFIG,
+                     trace_callback=trace_callback,
+                     llm_type="skill_router", step_name="skill_router_select")
+    try:
+        data = await agent.chat_json(user_msg)
+        result = []
+        for item in data.get("matches", []):
+            if isinstance(item, str):
+                result.append({"skill_id": item, "description": ""})
+            elif isinstance(item, dict) and "skill_id" in item:
+                result.append({"skill_id": item["skill_id"], "description": item.get("description", "")})
+        return result
+    except Exception as e:
+        logger.warning(f"skill_router LLM 精排失败: {e}")
+        return []
+
+
+def _find_skill_script(skill_name: str, script_filename: str) -> str:
+    """在 skill registry 中查找 script 文件的绝对路径。"""
+    base = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "skills", "builtin"))
+    path = os.path.join(base, skill_name, "scripts", script_filename)
+    return path if os.path.isfile(path) else ""
 
 
 def _query_matches_anchor(query: str, anchor_name: str) -> bool:
@@ -46,6 +241,49 @@ def _query_matches_anchor(query: str, anchor_name: str) -> bool:
         if len(word) >= 3 and word.lower() in query.lower():
             return True
     return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Skill 渐进式披露工具（L2：指令正文 / L3：references 文件）
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _get_skill_instructions(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
+    """L2 披露：加载 SKILL.md 正文（不含 frontmatter），获取 How to Use / Steps 等执行指南。"""
+    skill_name = args.get("skill_name", "")
+    if not skill_name:
+        yield {"result": SkillResult(False, "缺少 skill_name 参数")}
+        return
+    try:
+        content = tool_ctx.registry.load_full_content(skill_name)
+        if content:
+            # 只返回 frontmatter 之后的正文
+            parts = content.split("---", 2)
+            body = parts[2].strip() if len(parts) >= 3 else content
+            yield {"result": SkillResult(True, f"已加载 {skill_name} 指南", data={"instructions": body})}
+        else:
+            yield {"result": SkillResult(False, f"未找到 Skill: {skill_name}")}
+    except Exception as e:
+        yield {"result": SkillResult(False, f"加载失败: {e}")}
+
+
+async def _get_skill_reference(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dict, None]:
+    """L3 披露：加载 skill references/ 目录下的参考文件（prompt 模板、清单、Schema 等）。"""
+    skill_name = args.get("skill_name", "")
+    ref_name = args.get("ref_name", "")
+    if not skill_name or not ref_name:
+        yield {"result": SkillResult(False, "缺少 skill_name 或 ref_name 参数")}
+        return
+    base = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "skills", "builtin"))
+    ref_path = os.path.join(base, skill_name, "references", ref_name)
+    if not os.path.isfile(ref_path):
+        yield {"result": SkillResult(False, f"参考文件不存在: {skill_name}/references/{ref_name}")}
+        return
+    try:
+        with open(ref_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        yield {"result": SkillResult(True, f"已加载 {ref_name}", data={"content": content, "path": ref_path})}
+    except Exception as e:
+        yield {"result": SkillResult(False, f"读取失败: {e}")}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,11 +367,39 @@ async def _search_skill(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dic
         yield {"result": SkillResult(False, "outline-generate 执行器未加载")}
         return
 
+    # LLM 锚点选择（tool 层统一做，executor 只做纯算法）
+    # 先让 executor 做 FAISS+Neo4j，再传入 LLM 预计算的锚点
+    # 策略：运行一次"预检"以获取候选节点，再调 LLM 选锚，最后传 anchor 参数给真正的 execute
+    anchor = None
+    filter_conditions = args.get("filter_conditions")
+    remove_nodes = []
+
+    try:
+        llm_svc = tool_ctx.container.get("llm_service") if tool_ctx.container else None
+        # 从 executor 暴露的 helper 获取候选节点（不启动完整 execute 流程）
+        qe = await executor._emb.get_embedding(query)
+        cands = executor._faiss.search(qe, executor._top_k, executor._threshold)
+        if cands:
+            nodes = await executor._neo4j.get_ancestor_paths([c.neo4j_id for c in cands])
+            if nodes and llm_svc:
+                anchor = await _llm_select_anchor(query, nodes, llm_svc, tool_ctx.trace_callback)
+                # 条件裁剪
+                if filter_conditions and isinstance(filter_conditions, dict):
+                    fd = filter_conditions.get("focus_dimensions", [])
+                    fi = filter_conditions.get("focus_items", [])
+                    ex = filter_conditions.get("exclude", [])
+                    if fd or fi or ex:
+                        # 需要先取子树才能裁剪，这里先记录条件，executor 返回后裁剪
+                        pass  # remove_nodes 在 executor 返回 subtree 后再算
+    except Exception as e:
+        logger.warning(f"search_skill: LLM 预计算失败，使用 executor 降级: {e}")
+
     logger.info(f"search_skill: query={query!r} session={tool_ctx.session_id}")
     skill_ctx = SkillContext(
         session_id=tool_ctx.session_id,
         user_message=query,
-        params={"query": query},
+        params={"query": query, "anchor": anchor, "remove_nodes": remove_nodes or None,
+                "filter_conditions": filter_conditions},
         trace_callback=tool_ctx.trace_callback,
     )
     result = None
@@ -199,10 +465,32 @@ async def _skill_router(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dic
         yield {"result": SkillResult(True, "skill_router 未加载，跳过", data={"candidates": []})}
         return
 
+    # LLM 精排（tool 层统一做）：先查 DB 获取 skill_metas，再调 LLM，结果传给 executor
+    matched_ids = []
+    try:
+        rows = await executor._store.list_active_outlines_for_router()
+        skill_metas = [
+            {
+                "skill_id": r["skill_name"],
+                "outline_id": r["id"],
+                "display_name": r.get("display_name") or r["skill_name"],
+                "scene_intro": r.get("scene_intro", ""),
+                "keywords": r.get("keywords") or [],
+                "query_variants": r.get("query_variants") or [],
+            }
+            for r in rows
+        ]
+        if skill_metas:
+            llm_svc = tool_ctx.container.get("llm_service") if tool_ctx.container else None
+            if llm_svc:
+                matched_ids = await _llm_route_skills(query, skill_metas, llm_svc, tool_ctx.trace_callback)
+    except Exception as e:
+        logger.warning(f"skill_router LLM 预计算失败: {e}")
+
     ctx = SkillContext(
         session_id=tool_ctx.session_id,
         user_message=query,
-        params={"query": query},
+        params={"query": query, "matched_ids": matched_ids},
         trace_callback=tool_ctx.trace_callback,
     )
     result = None
@@ -245,10 +533,21 @@ async def _clip_outline(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[dic
     state = await tool_ctx.chat_history.get_outline_state(tool_ctx.session_id)
     current_outline = state.get("outline_json") if state else tool_ctx.current_outline
 
+    # LLM 裁剪指令解析（tool 层统一做，executor 只执行纯算法）
+    clip_instructions = []
+    try:
+        from skills.builtin.outline_clip.scripts.outline_clip_executor import OutlineClipExecutor as _OCE
+        nodes_text = _OCE.collect_nodes_text(current_outline) if current_outline else ""
+        llm_svc = tool_ctx.container.get("llm_service") if tool_ctx.container else None
+        if llm_svc:
+            clip_instructions = await _llm_parse_clip(instruction, nodes_text, llm_svc, tool_ctx.trace_callback)
+    except Exception as e:
+        logger.warning(f"clip_outline: LLM 解析失败，executor 将返回失败: {e}")
+
     skill_ctx = SkillContext(
         session_id=tool_ctx.session_id,
         user_message=instruction,
-        params={"instructions": instruction},
+        params={"instructions": instruction, "clip_instructions": clip_instructions},
         current_outline=current_outline,
         trace_callback=tool_ctx.trace_callback,
     )
@@ -380,11 +679,15 @@ async def _extract_intent(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[d
         yield {"result": SkillResult(False, "intent-extract 执行器未加载")}
         return
 
+    # Step 1: LLM 意图提取（tool 层统一做，executor 不含 LLM）
     logger.info(f"extract_intent: 启动 session={tool_ctx.session_id}")
+    llm_svc = tool_ctx.container.get("llm_service") if tool_ctx.container else None
+    intent = await _llm_extract_intent(expert_input, llm_svc, tool_ctx.trace_callback)
+
     skill_ctx = SkillContext(
         session_id=tool_ctx.session_id,
         user_message=expert_input,
-        params={"expert_input": expert_input},
+        params={"expert_input": expert_input, "intent": intent},
         current_outline=tool_ctx.current_outline,
         trace_callback=tool_ctx.trace_callback,
     )
@@ -447,70 +750,65 @@ async def _extract_intent(args: dict, tool_ctx: ToolContext) -> AsyncGenerator[d
                                                 "intent": intent})}
             return
 
-    # 路径 B：调用 bottom_up_organizer 生成大纲
+    # 路径 B：LLM 组织大纲 → BottomUpOrganizer 后处理
     if path in ("bottom_up", "no_match"):
-        bu_executor = tool_ctx.loader.get_executor("outline-generate")
         bottom_up_data = (final.data or {}).get("bottom_up", {})
 
-        # 动态加载 BottomUpOrganizer（同目录下的模块）
         try:
+            # Step 1: LLM 生成 raw_outline（tool 层统一做）
+            raw_outline = await _llm_organize_bottom_up(
+                intent, bottom_up_data, expert_input, llm_svc, tool_ctx.trace_callback
+            )
+
+            # Step 2: BottomUpOrganizer 纯算法后处理（hydrate_l5 + paragraph + md渲染）
             import importlib.util
-            import sys as _sys
-            rag_dir = None
-            for skill in tool_ctx.registry.get_enabled():
-                if skill.name == "outline-generate":
-                    rag_dir = skill.skill_dir
-                    break
-            if rag_dir:
-                bu_path = os.path.join(rag_dir, "scripts", "bottom_up_organizer.py")
-                spec = importlib.util.spec_from_file_location("bottom_up_organizer", bu_path)
-                bu_mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(bu_mod)
-                indicator_resolver = tool_ctx.container.get("indicator_resolver") if tool_ctx.container else None
-                llm_service = tool_ctx.container.get("llm_service") if tool_ctx.container else None
-                organizer = bu_mod.BottomUpOrganizer(llm_service, indicator_resolver)
-                bu_ctx = SkillContext(
-                    session_id=tool_ctx.session_id,
-                    user_message=expert_input,
-                    params={"intent": intent, "bottom_up": bottom_up_data, "raw_input": expert_input},
-                    trace_callback=tool_ctx.trace_callback,
+            bu_path = _find_skill_script("outline-generate", "bottom_up_organizer.py")
+            if not bu_path:
+                yield {"result": SkillResult(False, "bottom_up_organizer.py 未找到")}
+                return
+            spec = importlib.util.spec_from_file_location("_bu_mod", bu_path)
+            bu_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(bu_mod)
+            indicator_resolver = tool_ctx.container.get("indicator_resolver") if tool_ctx.container else None
+            organizer = bu_mod.BottomUpOrganizer(indicator_resolver)
+            bu_ctx = SkillContext(
+                session_id=tool_ctx.session_id,
+                user_message=expert_input,
+                params={
+                    "intent": intent, "bottom_up": bottom_up_data,
+                    "raw_input": expert_input, "raw_outline": raw_outline,
+                },
+                trace_callback=tool_ctx.trace_callback,
+            )
+            bu_result = None
+            async for item in organizer.execute(bu_ctx):
+                if isinstance(item, SkillResult):
+                    bu_result = item
+                elif isinstance(item, str):
+                    yield {"sse": item}
+
+            if bu_result and bu_result.success:
+                subtree = bu_result.data.get("subtree", {})
+                anchor_info = bu_result.data.get("anchor", {})
+                await tool_ctx.chat_history.save_outline_state(tool_ctx.session_id, subtree, anchor_info)
+                tool_ctx.has_outline = True
+                tool_ctx.current_outline = subtree
+                await tool_ctx.session_service.redis.setex(
+                    f"skill_factory_ctx:{tool_ctx.session_id}", 3600,
+                    json.dumps({"raw_input": expert_input, "intent": intent,
+                                "outline_json": subtree, "path": "bottom_up"}, ensure_ascii=False)
                 )
-                bu_result = None
-                async for item in organizer.execute(bu_ctx):
-                    if isinstance(item, SkillResult):
-                        bu_result = item
-                    elif isinstance(item, str):
-                        yield {"sse": item}
-                if bu_result and bu_result.success:
-                    subtree = bu_result.data.get("subtree", {})
-                    anchor_info = bu_result.data.get("anchor", {})
-                    await tool_ctx.chat_history.save_outline_state(
-                        tool_ctx.session_id, subtree, anchor_info
-                    )
-                    tool_ctx.has_outline = True
-                    tool_ctx.current_outline = subtree
-                    cache_payload = {
-                        "raw_input": expert_input,
-                        "intent": intent,
-                        "outline_json": subtree,
-                        "path": "bottom_up",
-                    }
-                    await tool_ctx.session_service.redis.setex(
-                        f"skill_factory_ctx:{tool_ctx.session_id}", 3600,
-                        json.dumps(cache_payload, ensure_ascii=False)
-                    )
-                    yield {"sse": json.dumps({"type": "persist_prompt",
-                                              "message": "大纲已生成。是否将此次推理保存为新的看网能力？",
-                                              "context_key": tool_ctx.session_id}, ensure_ascii=False)}
-                    yield {"result": SkillResult(True, "路径B大纲生成完成",
-                                                  data={"path": "bottom_up", "outline_json": subtree,
-                                                        "intent": intent})}
-                    return
-                else:
-                    yield {"result": bu_result or SkillResult(False, "路径B大纲生成失败")}
-                    return
+                yield {"sse": json.dumps({"type": "persist_prompt",
+                                          "message": "大纲已生成。是否将此次推理保存为新的看网能力？",
+                                          "context_key": tool_ctx.session_id}, ensure_ascii=False)}
+                yield {"result": SkillResult(True, "路径B大纲生成完成",
+                                              data={"path": "bottom_up", "outline_json": subtree, "intent": intent})}
+                return
+            else:
+                yield {"result": bu_result or SkillResult(False, "路径B大纲生成失败")}
+                return
         except Exception as e:
-            logger.error(f"extract_intent: BottomUpOrganizer 加载失败: {e}", exc_info=True)
+            logger.error(f"extract_intent: 路径B大纲生成失败: {e}", exc_info=True)
 
     yield {"result": SkillResult(False, f"意图提取完成但无法生成大纲 (path={path})")}
 
@@ -750,6 +1048,40 @@ async def _modify_report_text(args: dict, tool_ctx: ToolContext) -> AsyncGenerat
 
 def register_all_tools(registry: ToolRegistry):
     """注册所有工具到 ToolRegistry。"""
+
+    # ── Skill 渐进式披露工具（L2/L3）──
+    registry.register(
+        name="get_skill_instructions",
+        description=(
+            "L2 披露：加载指定 Skill 的 SKILL.md 正文（How to Use / Steps 等执行指南）。"
+            "决定使用某个 Skill 后调用，了解具体调用步骤和参数要求。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "skill_name": {"type": "string", "description": "Skill 名称，如 intent-extract / outline-generate"},
+            },
+            "required": ["skill_name"],
+        },
+        fn=_get_skill_instructions,
+    )
+
+    registry.register(
+        name="get_skill_reference",
+        description=(
+            "L3 披露：加载 Skill references/ 目录下的参考文件（prompt 模板、评审清单、数据 Schema 等）。"
+            "执行 Skill 具体步骤时按需调用。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "skill_name": {"type": "string", "description": "Skill 名称"},
+                "ref_name": {"type": "string", "description": "文件名，如 anchor_select_prompt.md"},
+            },
+            "required": ["skill_name", "ref_name"],
+        },
+        fn=_get_skill_reference,
+    )
 
     # ── 基础工具 ──
     registry.register(

@@ -8,17 +8,38 @@ params:
     type: string
     required: true
     description: 用户的裁剪指令文本
+paradigm: Tool Wrapper
 executor:
   module: outline_clip_executor
   class: OutlineClipExecutor
-  deps:
-    - llm_service
+  deps: []
 ---
 
 # 大纲动态裁剪
 
 ## 适用场景
 已有大纲后，用户说"不看XX"/"删除XX"/"去掉XX"/"只看XX"，需要对大纲进行动态修改。
+
+## Metadata
+- **paradigm**: Tool Wrapper（裁剪算法封装，LLM 指令解析在 tool 层）
+- **when_to_use**: 已有大纲，用户说"不看XX"/"删除XX"/"只看XX"时
+- **inputs**: clip_instructions（tool 层 LLM 预解析的结构化操作列表）
+- **outputs**: updated_outline（裁剪后的大纲树）、deleted_nodes、modified_params
+
+## When to Use
+- ✅ 用户明确说"不看XX"/"去掉XX"/"只看XX"/"删除XX节点"
+- ❌ 生成新大纲（使用 search_skill）
+- ❌ 修改参数阈值（使用 inject_params）
+
+## How to Use
+
+> LLM 指令解析在 **tool 层**（`tool_definitions._clip_outline`）完成，executor 只做纯算法。
+
+1. tool 层 `_llm_parse_clip(instruction, nodes_text)` → 生成 clip_instructions 列表
+2. executor 接收 `params.clip_instructions` → 纯算法执行 delete_node / filter_param / keep_only
+
+## References
+- `references/clip_prompt.md` — 裁剪指令解析 LLM prompt
 
 ## 工具调用：clip_outline(instruction)
 传入用户的裁剪指令文本，系统 LLM 解析后执行以下操作之一或组合：
